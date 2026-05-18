@@ -204,6 +204,7 @@ function queueAllOffOnExit(incubatorId) {
     payload.append('incubator_id', incubatorId);
     payload.append('relay', relay);
     payload.append('state', '0');
+    payload.append('source_page', 'accounts');
     navigator.sendBeacon('../ajax/hardware_api.php', payload);
   });
 }
@@ -214,7 +215,8 @@ function sendRelayTest(incubatorId, relay, state) {
     action: 'test_mode_set_relay',
     incubator_id: incubatorId,
     relay: relay,
-    state: state ? 1 : 0
+    state: state ? 1 : 0,
+    source_page: 'accounts'
   }, function(res) {
     if (res && res.success) {
       showToast('Command sent: ' + relay.replace(/_/g, ' ') + ' ' + (state ? 'ON' : 'OFF'));

@@ -179,6 +179,7 @@ bool heater1On     = false;
 bool heater2On     = false;
 bool eggswingOn    = false;
 bool exhaustOn     = false;
+bool  idleRelayTestHold = false;
 
 // Manual override flags (set by dashboard commands)
 bool heaterManualOverride = false;   // true = dashboard forced a state
@@ -197,6 +198,7 @@ unsigned long lastStatusPrint   = 0;
 unsigned long lastHeartbeatSent = 0;
 unsigned long lastExhaustCycleAt = 0;
 unsigned long exhaustCycleStartedAt = 0;
+unsigned long lastIdleRelayPoll = 0;
 bool exhaustCycleActive = false;
 
 const char* getCurrentModeLabel() {
@@ -411,12 +413,21 @@ void loop() {
             readTemperature();
             readHumidity();
         }
-        // Heater OFF during idle
-        if (heaterGroupOn) setHeater(false);
-        if (heaterFanOn) setHeaterFan(false);
-        if (exhaustOn) setExhaust(false);
-        exhaustCycleActive = false;
-        if (eggswingOn) setSwing(false);
+
+        if (now - lastIdleRelayPoll >= COMMAND_INTERVAL) {
+            lastIdleRelayPoll = now;
+            pollServerForTestCommands();
+            idleRelayTestHold = heaterGroupOn || heaterFanOn || heater1On || heater2On || eggswingOn || exhaustOn;
+        }
+
+        // Heater OFF during idle unless relay testing is currently active
+        if (!idleRelayTestHold) {
+            if (heaterGroupOn) setHeater(false);
+            if (heaterFanOn) setHeaterFan(false);
+            if (exhaustOn) setExhaust(false);
+            exhaustCycleActive = false;
+            if (eggswingOn) setSwing(false);
+        }
         if (now - lastSettingsFetch >= IDLE_SETTINGS_INTERVAL) {
             lastSettingsFetch = now;
             Serial.println(F("[IDLE] Fetching parameters from server..."));
@@ -814,9 +825,13 @@ void pollServerForTestCommands() {
             postTestDHTToServer();
         } else if (!err && doc.containsKey("error")) {
             Serial.printf("[TEST CMD] API error: %s\n", ((const char*)doc["error"]));
+                idleRelayTestHold = false;
+            } else if (!err) {
+                idleRelayTestHold = false;
         }
     } else {
         Serial.printf("[TEST CMD] Poll failed: HTTP %d\n", httpCode);
+            idleRelayTestHold = false;
     }
     
     httpClient.end();
@@ -1086,8 +1101,6 @@ void fetchParametersFromServer() {
             } else if (sessionMode == MODE_IDLE) {
                 sessionStartedAt = 0;
                 sessionEndsAt = 0;
-                setHeater(false);
-                setSwing(false);
                 Serial.println(F("[Mode] Switched to IDLE (no active session)"));
             }
 

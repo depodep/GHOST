@@ -454,16 +454,17 @@ if ($action === 'device_status' || $action === 'device_heartbeat') {
     $activeSession  = isset($_POST['active_session_name']) ? trim($_POST['active_session_name']) : null;
     $lastEggTurnAt  = isset($_POST['last_egg_turn_at']) ? trim($_POST['last_egg_turn_at']) : null;
     $previousState  = fetchLiveState($pdo, $incubator_id);
+    $shouldPersistRelayState = $current_mode !== '' && $current_mode !== 'idle';
 
-    // Parse individual relay states (ESP8266 sends: heater, h1/heater_1, h2/heater_2, fan/heater_fan, swing, exhaust)
-    // If not explicitly sent, preserve the previous state (don't default to main heater value)
-    $heater_on      = (int)($_POST['heater'] ?? ($_POST['heater_on'] ?? 0));
-    $heater_1       = (int)($_POST['h1'] ?? ($_POST['heater_1'] ?? ($_POST['heater_1_status'] ?? ($previousState['heater_1_status'] ?? 0))));
-    $heater_2       = (int)($_POST['h2'] ?? ($_POST['heater_2'] ?? ($_POST['heater_2_status'] ?? ($previousState['heater_2_status'] ?? 0))));
-    $heater_fan     = (int)($_POST['fan'] ?? ($_POST['heater_fan'] ?? ($_POST['heater_fan_status'] ?? ($previousState['heater_fan_status'] ?? 0))));
-    $exhaust        = (int)($_POST['exhaust'] ?? ($_POST['exhaust_status'] ?? ($previousState['exhaust_status'] ?? 0)));
-    $swing_on       = (int)($_POST['swing']  ?? ($_POST['swing_on'] ?? ($previousState['swing_on'] ?? 0)));
-    if (!$heater_on && ($heater_fan || $heater_1 || $heater_2)) {
+    // Parse individual relay states. When the device is idle, preserve relay values in DB
+    // so test-mode/manual states from /user/accounts.php are not overwritten by zero heartbeats.
+    $heater_on      = $shouldPersistRelayState ? (int)($_POST['heater'] ?? ($_POST['heater_on'] ?? 0)) : (int)($previousState['heater_on'] ?? 0);
+    $heater_1       = $shouldPersistRelayState ? (int)($_POST['h1'] ?? ($_POST['heater_1'] ?? ($_POST['heater_1_status'] ?? ($previousState['heater_1_status'] ?? 0)))) : (int)($previousState['heater_1_status'] ?? 0);
+    $heater_2       = $shouldPersistRelayState ? (int)($_POST['h2'] ?? ($_POST['heater_2'] ?? ($_POST['heater_2_status'] ?? ($previousState['heater_2_status'] ?? 0)))) : (int)($previousState['heater_2_status'] ?? 0);
+    $heater_fan     = $shouldPersistRelayState ? (int)($_POST['fan'] ?? ($_POST['heater_fan'] ?? ($_POST['heater_fan_status'] ?? ($previousState['heater_fan_status'] ?? 0)))) : (int)($previousState['heater_fan_status'] ?? 0);
+    $exhaust        = $shouldPersistRelayState ? (int)($_POST['exhaust'] ?? ($_POST['exhaust_status'] ?? ($previousState['exhaust_status'] ?? 0))) : (int)($previousState['exhaust_status'] ?? 0);
+    $swing_on       = $shouldPersistRelayState ? (int)($_POST['swing']  ?? ($_POST['swing_on'] ?? ($previousState['swing_on'] ?? 0))) : (int)($previousState['swing_on'] ?? 0);
+    if ($shouldPersistRelayState && !$heater_on && ($heater_fan || $heater_1 || $heater_2)) {
         $heater_on = 1;
     }
 
@@ -678,8 +679,8 @@ if ($action === 'get_device_config') {
             'turning_interval' => 8,
             'swing_duration_sec' => 30,
             'session_status' => 'idle',
-            'active_session_name' => $activeBatch ? $activeBatch['batch_name'] : null,
-            'session_name' => $activeBatch ? $activeBatch['batch_name'] : null
+            'active_session_name' => $activeBatch ? $activeBatch['batch_name'] : '',
+            'session_name' => $activeBatch ? $activeBatch['batch_name'] : ''
         ]);
     }
 
@@ -702,7 +703,8 @@ if ($action === 'get_device_config') {
     $row['target_hum'] = $row['target_humidity'];
     $row['min_hum'] = $row['min_humidity'];
     $row['max_hum'] = $row['max_humidity'];
-    $row['session_name'] = $row['active_session_name'] ?? null;
+    $row['active_session_name'] = $row['active_session_name'] ?? '';
+    $row['session_name'] = $row['active_session_name'];
     $row = array_merge($row, calculateTurningLockdownState($row));
 
     json_response(array_merge(['success' => true], $row));
@@ -1552,6 +1554,7 @@ if ($action === 'test_mode_set_relay') {
     $incubator_id = (int)($_POST['incubator_id'] ?? 0);
     $relay = strtolower(trim($_POST['relay'] ?? ''));
     $state = (int)($_POST['state'] ?? 0);
+    $sourcePage = strtolower(trim((string)($_POST['source_page'] ?? '')));
 
     // Allow common aliases from UI/manual calls, then normalize.
     $relayAliases = [
@@ -1571,6 +1574,9 @@ if ($action === 'test_mode_set_relay') {
     
     if (!$incubator_id || !$relay) {
         json_response(['success' => false, 'error' => 'Missing incubator_id or relay']);
+    }
+    if ($sourcePage !== 'accounts') {
+        json_response(['success' => false, 'error' => 'Relay testing is allowed only from /user/accounts.php']);
     }
     if (!in_array($relay, $allowedRelays, true)) {
         json_response(['success' => false, 'error' => 'Unknown relay']);
