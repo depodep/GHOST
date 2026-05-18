@@ -43,7 +43,8 @@ const char* WIFI_PASSWORD = "Incubator2026";
 //  SERVER CONFIGURATION (Laptop Server)
 // ─────────────────────────────────────────────
 
-const char* SERVER_IP     = "192.168.70.46";  
+// const char* SERVER_IP     = "192.168.70.46";  
+const char* SERVER_IP     = "10.153.245.46";  
 const int   SERVER_PORT   = 80;               
 const char* SERVER_BASE_PATH = "/GHOST";       
 const int   INCUBATOR_ID  = 1;                 
