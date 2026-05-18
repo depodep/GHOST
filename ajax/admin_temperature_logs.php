@@ -1,0 +1,43 @@
+<?php
+/*
+ * ============================================================
+ *  Get Temperature Logs for Admin Chart Auto-Refresh
+ *  File: /GHOST/ajax/admin_temperature_logs.php
+ *  
+ *  Returns latest temperature and humidity logs for a specific
+ *  incubator to update the admin dashboard temperature chart via AJAX
+ * ============================================================
+ */
+
+require_once '../includes/config.php';
+requireAdmin();
+
+header('Content-Type: application/json');
+
+$incubator_id = (int)($_GET['incubator_id'] ?? 0);
+$limit        = (int)($_GET['limit'] ?? 10);
+
+if (!$incubator_id) {
+    echo json_encode(['success' => false, 'message' => 'Missing incubator_id']);
+    exit;
+}
+
+// Admin can access any incubator
+$pdo = getDB();
+
+// Get latest temperature logs
+$stmt = $pdo->prepare(
+    "SELECT temperature, humidity, DATE_FORMAT(recorded_at,'%H:%i') AS lbl
+     FROM temperature_logs 
+     WHERE incubator_id = ?
+     ORDER BY recorded_at DESC 
+     LIMIT ?
+     "
+);
+$stmt->bindParam(1, $incubator_id, PDO::PARAM_INT);
+$stmt->bindParam(2, $limit, PDO::PARAM_INT);
+$stmt->execute();
+$logs = array_reverse($stmt->fetchAll(PDO::FETCH_ASSOC));
+
+echo json_encode($logs);
+?>
