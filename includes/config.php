@@ -46,14 +46,14 @@ function isUserLoggedIn() {
 
 function requireAdmin() {
     if (!isAdminLoggedIn()) {
-        header('Location: ' . BASE_URL . '/admin/login.php');
+        header('Location: ' . BASE_URL . '/index.php');
         exit();
     }
 }
 
 function requireUser() {
     if (!isUserLoggedIn()) {
-        header('Location: ' . BASE_URL . '/user/login.php');
+        header('Location: ' . BASE_URL . '/index.php');
         exit();
     }
 }
@@ -114,6 +114,7 @@ function severityIcon($severity) {
 function runBatchScheduler() {
     try {
         $pdo = getDB();
+        $scheduleGraceSeconds = 300; // 5-minute grace after due time before failing
         // Run in transaction to avoid race conditions
         $pdo->beginTransaction();
 
@@ -190,7 +191,24 @@ function runBatchScheduler() {
                 $hsStmt->execute([$incubatorId]);
                 $hs = $hsStmt->fetch();
                 if ($hs && ($hs['session_status'] ?? '') === 'running') {
-                    throw new Exception("Incubator already has a running session");
+                    // Treat hardware_state as stale if no incubating batch exists.
+                    $activeBatchStmt = $pdo->prepare(
+                        "SELECT COUNT(*) FROM batches WHERE incubator_id = ? AND status = 'incubating'"
+                    );
+                    $activeBatchStmt->execute([$incubatorId]);
+                    $activeIncubatingCount = (int)($activeBatchStmt->fetchColumn() ?: 0);
+
+                    if ($activeIncubatingCount > 0) {
+                        throw new Exception("Incubator already has a running session");
+                    }
+
+                    $pdo->prepare(
+                        "UPDATE hardware_state
+                         SET session_status = 'idle', current_mode = 'idle', active_session_name = NULL,
+                             session_started_at = NULL, session_ends_at = NULL, session_completed_at = NULL,
+                             last_server_sync = NOW(), last_active_at = NOW()
+                         WHERE incubator_id = ?"
+                    )->execute([$incubatorId]);
                 }
 
                 // If schedule has no batch_id yet, create the backing batch now so the dashboard can track it.
@@ -244,10 +262,13 @@ function runBatchScheduler() {
 
                     // Upsert hardware_state for this incubator
                     $endsAt = !empty($batch['expected_hatch_date']) ? ($batch['expected_hatch_date'] . ' 00:00:00') : null;
+                    // Do not touch `last_seen` here — it's updated only by device heartbeats.
+                    // Update server-sync timestamps but preserve device `last_seen` so server actions
+                    // don't falsely mark the device as online.
                     $upsert = $pdo->prepare(
-                        "INSERT INTO hardware_state (incubator_id, session_status, session_started_at, session_ends_at, current_mode, active_session_name, last_server_sync, last_seen, last_active_at)
-                         VALUES (?, 'running', ?, ?, 'incubating', ?, NOW(), NOW(), NOW())
-                         ON DUPLICATE KEY UPDATE session_status = 'running', session_started_at = VALUES(session_started_at), session_ends_at = VALUES(session_ends_at), current_mode = 'incubating', active_session_name = VALUES(active_session_name), last_server_sync = NOW(), last_seen = NOW(), last_active_at = NOW()"
+                        "INSERT INTO hardware_state (incubator_id, session_status, session_started_at, session_ends_at, current_mode, active_session_name, last_server_sync, last_active_at)
+                         VALUES (?, 'running', ?, ?, 'incubating', ?, NOW(), NOW())
+                         ON DUPLICATE KEY UPDATE session_status = 'running', session_started_at = VALUES(session_started_at), session_ends_at = VALUES(session_ends_at), current_mode = 'incubating', active_session_name = VALUES(active_session_name), last_server_sync = NOW(), last_active_at = NOW()"
                     );
                     $upsert->execute([$incubatorId, $now, $endsAt, $batch['batch_name']]);
 
@@ -265,13 +286,18 @@ function runBatchScheduler() {
                 $schedulesProcessed++;
 
             } catch (Exception $scheduleEx) {
-                // Mark schedule and associated batch as failed
-                $pdo->prepare("UPDATE schedules SET status = 'failed' WHERE id = ?")->execute([$schedId]);
-                if ($batchId) {
-                    $pdo->prepare("UPDATE batches SET status = 'failed' WHERE id = ?")->execute([$batchId]);
+                $scheduledAtTs = strtotime(trim(($sched['scheduled_date'] ?? '') . ' ' . ($sched['scheduled_time'] ?? '00:00:00')));
+                $shouldFailNow = $scheduledAtTs ? (($scheduledAtTs + $scheduleGraceSeconds) <= time()) : true;
+
+                if ($shouldFailNow) {
+                    // Mark schedule and associated batch as failed only after grace period.
+                    $pdo->prepare("UPDATE schedules SET status = 'failed' WHERE id = ?")->execute([$schedId]);
+                    if ($batchId) {
+                        $pdo->prepare("UPDATE batches SET status = 'failed' WHERE id = ?")->execute([$batchId]);
+                    }
+                    $pdo->prepare("INSERT INTO activity_logs (role, user_id, action, details, ip_address) VALUES (?,?,?,?,?)")
+                        ->execute(['system', null, 'auto_schedule_failed', "Schedule '{$schedTitle}' (ID {$schedId}) failed after grace period: {$scheduleEx->getMessage()}", $ip]);
                 }
-                $pdo->prepare("INSERT INTO activity_logs (role, user_id, action, details, ip_address) VALUES (?,?,?,?,?)")
-                    ->execute(['system', null, 'auto_schedule_failed', "Schedule '{$schedTitle}' (ID {$schedId}) failed: {$scheduleEx->getMessage()}", $ip]);
             }
         }
 
@@ -294,6 +320,76 @@ function runBatchScheduler() {
             $ended++;
         }
 
+        // 1.5) Detect running sessions with no heartbeat within timeout and mark them failed
+        try {
+            $heartbeatTimeoutMinutes = 5;
+            $staleStmt = $pdo->prepare(
+                "SELECT s.id AS session_id, s.batch_id, s.incubator_id, s.started_at, h.last_seen
+                 FROM sessions s
+                 JOIN hardware_state h ON s.incubator_id = h.incubator_id
+                 WHERE s.status = 'running'"
+            );
+            $staleStmt->execute();
+            $stale = $staleStmt->fetchAll();
+            foreach ($stale as $r) {
+                $startedAt = strtotime($r['started_at']);
+                $lastSeen = $r['last_seen'] ? strtotime($r['last_seen']) : 0;
+
+                // If never seen or last seen earlier than start + timeout minutes
+                if ($lastSeen === 0 || $lastSeen < ($startedAt + ($heartbeatTimeoutMinutes * 60))) {
+                    // Mark session interrupted/failed
+                    $pdo->prepare("UPDATE sessions SET status = 'interrupted', ended_at = NOW(), reason_ended = ? WHERE id = ?")
+                        ->execute(['no_heartbeat', $r['session_id']]);
+
+                    // Mark associated batch as failed (if present)
+                    if (!empty($r['batch_id'])) {
+                        $pdo->prepare("UPDATE batches SET status = 'failed' WHERE id = ?")->execute([$r['batch_id']]);
+                    }
+
+                    // Update hardware_state to indicate failure
+                    $pdo->prepare("UPDATE hardware_state SET session_status = 'failed', last_server_sync = NOW() WHERE incubator_id = ?")
+                        ->execute([$r['incubator_id']]);
+
+                    // Log activity
+                    $pdo->prepare("INSERT INTO activity_logs (role, user_id, action, details, ip_address) VALUES (?,?,?,?,?)")
+                        ->execute(['system', null, 'auto_session_failed_no_heartbeat', "Session {$r['session_id']} for incubator {$r['incubator_id']} failed due to no heartbeat within {$heartbeatTimeoutMinutes} minutes", $ip]);
+
+                    // Log session event
+                    $pdo->prepare(
+                        "INSERT INTO session_logs (session_id, incubator_id, event_type, temperature, humidity, message) VALUES (?,?,?,?,?,?)"
+                    )->execute([$r['session_id'], $r['incubator_id'], 'device_offline', null, null, 'No heartbeat received within timeout after session start']);
+                }
+            }
+        } catch (Exception $e) {
+            // ignore stale-check errors
+        }
+
+        // 1.6) Fail scheduled batches that never started within timeout
+        try {
+            $scheduledStmt = $pdo->prepare(
+                "SELECT id, notes, incubator_id FROM batches WHERE status = 'scheduled'"
+            );
+            $scheduledStmt->execute();
+            $scheduled = $scheduledStmt->fetchAll();
+            $nowTs = time();
+            foreach ($scheduled as $sb) {
+                $notes = $sb['notes'] ?? '';
+                $scheduledStart = null;
+                if (preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $m)) {
+                    $scheduledStart = strtotime($m[1]);
+                }
+                if ($scheduledStart && ($scheduledStart + $scheduleGraceSeconds) <= $nowTs) {
+                    $pdo->prepare("UPDATE batches SET status = 'failed' WHERE id = ? AND status = 'scheduled'")
+                        ->execute([$sb['id']]);
+                    $pdo->prepare("UPDATE schedules SET status = 'failed' WHERE batch_id = ? AND status = 'pending'")
+                        ->execute([$sb['id']]);
+                    $pdo->prepare("INSERT INTO activity_logs (role, user_id, action, details, ip_address) VALUES (?,?,?,?,?)")
+                        ->execute(['system', null, 'auto_fail_scheduled', "Scheduled batch {$sb['id']} failed after grace period (no device heartbeat)", $ip]);
+                }
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
         $pdo->commit();
         return array('schedules_processed'=>$schedulesProcessed, 'batches_ended'=>$ended);
     } catch (Exception $e) {

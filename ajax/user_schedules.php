@@ -60,17 +60,23 @@ function existingScheduleWindows(PDO $pdo, $incubator_id, $excludeScheduleId = 0
   }
 
   $batchStmt = $pdo->prepare(
-    "SELECT id, batch_name, start_date, expected_hatch_date
+    "SELECT id, batch_name, start_date, expected_hatch_date, status, notes
      FROM batches
      WHERE incubator_id = ?
-       AND status = 'incubating'"
+       AND status IN ('scheduled','incubating')"
   );
   $batchStmt->execute([$incubator_id]);
   foreach ($batchStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
     if (empty($row['start_date']) || empty($row['expected_hatch_date'])) {
       continue;
     }
-    $start = DateTime::createFromFormat('Y-m-d H:i:s', $row['start_date'] . ' 00:00:00');
+    $start = null;
+    if (!empty($row['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $row['notes'], $matches)) {
+      $start = DateTime::createFromFormat('Y-m-d H:i:s', $matches[1]);
+    }
+    if (!$start) {
+      $start = DateTime::createFromFormat('Y-m-d H:i:s', $row['start_date'] . ' 00:00:00');
+    }
     $end = DateTime::createFromFormat('Y-m-d H:i:s', $row['expected_hatch_date'] . ' 23:59:59');
     if (!$start || !$end) {
       continue;
@@ -157,11 +163,20 @@ if($action === 'add'){
     }
   }
 
+  $conflict = hasConflict(existingScheduleWindows($pdo, $incubator_id), $newStart, $newEnd);
+  if ($conflict) {
+    jsonResponse([
+      'success' => false,
+      'message' => 'Schedule conflict detected. Another scheduled session overlaps this time range.'
+    ]);
+  }
+
+  $eggType = !empty($_POST['egg_type']) ? trim((string)$_POST['egg_type']) : 'Chicken';
+  $batchStartDate = $startAt->format('Y-m-d');
+  $batchHatchDate = date('Y-m-d', strtotime('+' . $session_duration_sec . ' seconds', $newStart));
+
   if (!$batch_id && $session_duration_sec > 0) {
-    $eggType = !empty($_POST['egg_type']) ? trim((string)$_POST['egg_type']) : 'Chicken';
     $batchName = sprintf('%s - %d eggs', $title ?: 'Batch', max(0, (int)($egg_count ?? 0)));
-    $batchStartDate = $startAt->format('Y-m-d');
-    $batchHatchDate = date('Y-m-d', strtotime('+' . $session_duration_sec . ' seconds', $newStart));
 
     $batchStmt = $pdo->prepare(
       "INSERT INTO batches (incubator_id, user_id, batch_name, egg_type, egg_count, start_date, expected_hatch_date, status, notes, created_at)
@@ -185,18 +200,10 @@ if($action === 'add'){
           SET status = 'scheduled', start_date = ?, expected_hatch_date = ?, notes = CONCAT('SCHEDULED_START: ', ?)
         WHERE id = ?"
     )->execute([
-      $startAt->format('Y-m-d'),
-      date('Y-m-d', strtotime('+' . $session_duration_sec . ' seconds', $newStart)),
+      $batchStartDate,
+      $batchHatchDate,
       $scheduledStartFormatted,
       $batch_id
-    ]);
-  }
-
-  $conflict = hasConflict(existingScheduleWindows($pdo, $incubator_id), $newStart, $newEnd);
-  if ($conflict) {
-    jsonResponse([
-      'success' => false,
-      'message' => 'Schedule conflict detected. Another incubation batch is already active within this time range.'
     ]);
   }
 
@@ -299,7 +306,7 @@ if($action === 'update'){
   if ($conflict) {
     jsonResponse([
       'success' => false,
-      'message' => 'Schedule conflict detected. Another incubation batch is already active within this time range.'
+      'message' => 'Schedule conflict detected. Another scheduled session overlaps this time range.'
     ]);
   }
 
@@ -337,7 +344,17 @@ if($action === 'update'){
 
 if($action === 'delete'){
   $id = (int)($_POST['id']??0);
-  $pdo->prepare("DELETE FROM schedules WHERE id=? AND created_by_role='user' AND created_by_id=?")->execute([$id,$uid]);
+  $stmt = $pdo->prepare("SELECT batch_id FROM schedules WHERE id=? AND created_by_role='user' AND created_by_id=? LIMIT 1");
+  $stmt->execute([$id,$uid]);
+  $batchId = (int)($stmt->fetchColumn() ?: 0);
+
+  $pdo->prepare("UPDATE schedules SET status='cancelled' WHERE id=? AND created_by_role='user' AND created_by_id=?")
+      ->execute([$id,$uid]);
+
+  if ($batchId) {
+    $pdo->prepare("UPDATE batches SET status='cancelled', terminated_at = COALESCE(terminated_at, NOW()) WHERE id=?")
+        ->execute([$batchId]);
+  }
   jsonResponse(['success'=>true]);
 }
 

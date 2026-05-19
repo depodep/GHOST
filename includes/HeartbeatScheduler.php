@@ -691,26 +691,38 @@ class HeartbeatScheduler {
      * Get default target temperature from settings
      */
     private function getDefaultTargetTemp(): float {
-        $stmt = $this->pdo->prepare(
-            "SELECT target_temperature FROM temperature_settings 
-             WHERE incubator_id = ? LIMIT 1"
-        );
-        $stmt->execute([$this->incubator_id]);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $result ? (float)$result['target_temperature'] : 37.5;
+        try {
+            $stmt = $this->pdo->prepare(
+                "SELECT target_temperature FROM temperature_settings 
+                 WHERE incubator_id = ? LIMIT 1"
+            );
+            $stmt->execute([$this->incubator_id]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $result && isset($result['target_temperature']) ? (float)$result['target_temperature'] : 37.5;
+        } catch (Exception $e) {
+            // Column may be missing or table not present; fall back to safe default
+            error_log("[HeartbeatScheduler] getDefaultTargetTemp fallback: " . $e->getMessage());
+            return 37.5;
+        }
     }
 
     /**
      * Get default target humidity from settings
      */
     private function getDefaultTargetHumidity(): float {
-        $stmt = $this->pdo->prepare(
-            "SELECT target_humidity FROM temperature_settings 
-             WHERE incubator_id = ? LIMIT 1"
-        );
-        $stmt->execute([$this->incubator_id]);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $result ? (float)$result['target_humidity'] : 60.0;
+        try {
+            $stmt = $this->pdo->prepare(
+                "SELECT target_humidity FROM temperature_settings 
+                 WHERE incubator_id = ? LIMIT 1"
+            );
+            $stmt->execute([$this->incubator_id]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $result && isset($result['target_humidity']) ? (float)$result['target_humidity'] : 60.0;
+        } catch (Exception $e) {
+            // Column may be missing or table not present; fall back to safe default
+            error_log("[HeartbeatScheduler] getDefaultTargetHumidity fallback: " . $e->getMessage());
+            return 60.0;
+        }
     }
 }
 

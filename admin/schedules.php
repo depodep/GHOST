@@ -216,10 +216,10 @@ function updateSchedule(){
 }
 
 function deleteSchedule(id){
-  showConfirm('Delete schedule', 'Delete this schedule?', function(){
-    showLoader('Deleting…');
+  showConfirm('Cancel schedule', 'Cancel this schedule? It will not be deleted.', function(){
+    showLoader('Cancelling…');
     $.post('../ajax/admin_schedules.php',{action:'delete',id},r=>{
-      hideLoader();if(r.success){showToast('Deleted!');setTimeout(()=>location.reload(),600);}    },'json');
+      hideLoader();if(r.success){showToast('Cancelled!');setTimeout(()=>location.reload(),600);}    },'json');
   });
 }
 

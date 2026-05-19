@@ -284,48 +284,6 @@ function refreshScheduleState(PDO $pdo, int $incubator_id): array {
         }
     }
 
-    $scheduledBatchStmt = $pdo->prepare(
-        "SELECT id, batch_name, notes
-         FROM batches
-         WHERE incubator_id = ? AND status = 'scheduled'
-         ORDER BY created_at ASC LIMIT 1"
-    );
-    $scheduledBatchStmt->execute([$incubator_id]);
-    $scheduledBatch = $scheduledBatchStmt->fetch();
-
-    if ($scheduledBatch) {
-        $notes = $scheduledBatch['notes'] ?? '';
-        $scheduledStartTime = null;
-        if (preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
-            $scheduledStartTime = $matches[1];
-        }
-
-        $shouldStart = false;
-        if ($scheduledStartTime) {
-            try {
-                $startDateTime = new DateTime($scheduledStartTime);
-                $shouldStart = ($now >= $startDateTime);
-            } catch (Exception $e) {
-                $shouldStart = true;
-            }
-        } else {
-            $shouldStart = true;
-        }
-
-        if ($shouldStart) {
-            $pdo->prepare(
-                "UPDATE batches SET status = 'incubating' WHERE id = ? AND status = 'scheduled'"
-            )->execute([$scheduledBatch['id']]);
-            $changes['promoted_batches']++;
-
-            $updated = $pdo->prepare("UPDATE schedules SET status = 'running' WHERE batch_id = ? AND status = 'pending'")
-                ->execute([$scheduledBatch['id']]);
-            if ($updated !== false) {
-                $changes['promoted_schedules']++;
-            }
-        }
-    }
-
     return $changes;
 }
 
@@ -851,6 +809,16 @@ if ($action === 'get_device_config') {
     $nextBatchStmt->execute([$incubator_id]);
     $nextBatch = $nextBatchStmt->fetch();
 
+    $nextScheduleStmt = $pdo->prepare(
+        "SELECT duration_hours, description
+         FROM schedules
+         WHERE incubator_id = ? AND status = 'pending'
+         ORDER BY scheduled_date ASC, scheduled_time ASC
+         LIMIT 1"
+    );
+    $nextScheduleStmt->execute([$incubator_id]);
+    $nextSchedule = $nextScheduleStmt->fetch();
+
     $scheduledBatchCountStmt = $pdo->prepare(
         "SELECT COUNT(*) FROM batches WHERE incubator_id = ? AND status = 'scheduled'"
     );
@@ -862,6 +830,22 @@ if ($action === 'get_device_config') {
         $nextSessionStartAt = $matches[1];
     }
     $nextSessionStartEpoch = $nextSessionStartAt ? strtotime($nextSessionStartAt) : null;
+    $nextSessionEndsAt = null;
+    $nextSessionDurationHours = null;
+    if ($nextSchedule && $nextSessionStartEpoch) {
+        if (isset($nextSchedule['duration_hours']) && $nextSchedule['duration_hours'] !== null && $nextSchedule['duration_hours'] !== '') {
+            $nextSessionDurationHours = (float)$nextSchedule['duration_hours'];
+        }
+        if (($nextSessionDurationHours === null || $nextSessionDurationHours <= 0) && !empty($nextSchedule['description'])) {
+            $decodedDescription = json_decode((string)$nextSchedule['description'], true);
+            if (is_array($decodedDescription) && isset($decodedDescription['session_duration_sec'])) {
+                $nextSessionDurationHours = max(0, (float)$decodedDescription['session_duration_sec'] / 3600);
+            }
+        }
+        if ($nextSessionDurationHours !== null && $nextSessionDurationHours > 0) {
+            $nextSessionEndsAt = date('Y-m-d H:i:s', $nextSessionStartEpoch + (int)round($nextSessionDurationHours * 3600));
+        }
+    }
     
     // ONLY mark batch as failed if:
     // 1. There IS an active incubating batch
@@ -915,6 +899,8 @@ if ($action === 'get_device_config') {
             'next_session_name' => $nextBatch ? $nextBatch['batch_name'] : '',
             'next_session_start_at' => $nextSessionStartAt,
             'next_session_start_epoch' => $nextSessionStartEpoch,
+            'next_session_ends_at' => $nextSessionEndsAt,
+            'next_session_duration_hours' => $nextSessionDurationHours,
             'next_session_status' => $nextBatch ? 'scheduled' : 'idle',
             'scheduled_batch_count' => $scheduledBatchCount
         ]);
@@ -1101,6 +1087,7 @@ if ($action === 'start_session') {
     $egg_count     = (int)($_POST['egg_count'] ?? 0);
     $egg_type      = trim((string)($_POST['egg_type'] ?? 'Chicken'));
     $scheduled_start_datetime = trim((string)($_POST['scheduled_start_datetime'] ?? ''));
+    $startImmediately = true;
 
     if (!$incubator_id) {
         echo json_encode(['success' => false, 'message' => 'Missing incubator_id']);
@@ -1173,7 +1160,6 @@ if ($action === 'start_session') {
     // Parse scheduled start datetime (format: "YYYY-MM-DD HH:MM")
     $scheduledDateTime = null;
     $batchStartDate = date('Y-m-d');
-    $startImmediately = true;
     if (!empty($scheduled_start_datetime)) {
         try {
             $scheduledDateTime = new DateTime($scheduled_start_datetime);

@@ -59,6 +59,49 @@ $tempLogs = array_reverse($pdo->query(
     "SELECT temperature, humidity, DATE_FORMAT(recorded_at,'%H:%i') AS lbl
      FROM temperature_logs WHERE incubator_id=1
      ORDER BY recorded_at DESC LIMIT 10")->fetchAll());
+
+// Helpers: extract batch start timestamp and display egg count with fallbacks
+function extractBatchStartTimestamp($b) {
+    // Prefer an explicit SCHEDULED_START in notes (format: YYYY-MM-DD HH:MM:SS)
+    if (!empty($b['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $b['notes'], $m)) {
+        $ts = strtotime($m[1]);
+        if ($ts !== false) return $ts;
+    }
+
+    // If query included a session_start_time (created_at formatted), use it
+    if (!empty($b['session_start_time'])) {
+        $ts = strtotime($b['session_start_time']);
+        if ($ts !== false) return $ts;
+    }
+
+    // Fallback to start_date if available
+    if (!empty($b['start_date'])) {
+        $ts = strtotime($b['start_date'] . ' 00:00:00');
+        if ($ts !== false) return $ts;
+    }
+
+    return null;
+}
+
+function displayEggCountForRow($b) {
+    // Prefer explicit egg_count column
+    if (isset($b['egg_count']) && (int)$b['egg_count'] > 0) {
+        return number_format((int)$b['egg_count']);
+    }
+
+    // Look for an EGG_COUNT: marker in notes
+    if (!empty($b['notes']) && preg_match('/EGG_COUNT:\s*(\d+)/', $b['notes'], $m)) {
+        return number_format((int)$m[1]);
+    }
+
+    // Try to infer from batch_name like '5 eggs' (best-effort)
+    if (!empty($b['batch_name']) && preg_match('/(\d+)\s*egg/i', $b['batch_name'], $m2)) {
+        return number_format((int)$m2[1]);
+    }
+
+    return '—';
+}
+
 ?>
 
 <!-- ── STAT CARDS ──────────────────────────────────────────── -->
@@ -317,15 +360,15 @@ $tempLogs = array_reverse($pdo->query(
                 </div>
 
                 <div class="control-buttons">
-                    <button id="btnStart" class="btn-success-ghost" onclick="startSessionQuick()"
+                    <button type="button" id="btnStart" class="btn-success-ghost" onclick="startSessionQuick()"
                         title="Start incubation session">
                         <i class="fas fa-play"></i> Start
                     </button>
-                    <button id="btnStop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled
+                    <button type="button" id="btnStop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled
                         title="Stop incubation session">
                         <i class="fas fa-stop"></i> Stop
                     </button>
-                    <button id="btnSetParams" class="btn-ghost" onclick="openIncubateModal()" disabled
+                    <button type="button" id="btnSetParams" class="btn-ghost" onclick="openIncubateModal()" disabled
                         title="Set incubation parameters">
                         <i class="fas fa-sliders-h"></i> Set Params
                     </button>
@@ -407,7 +450,7 @@ $tempLogs = array_reverse($pdo->query(
         <div class="ghost-panel h-100" id="sessionParamsCard">
             <div class="ghost-panel-header d-flex justify-content-between align-items-center">
                 <span class="ghost-panel-title">🧪 Current Session Parameters</span>
-                <button id="btnStopTop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled>Stop Session</button>
+                <button type="button" id="btnStopTop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled>Stop Session</button>
             </div>
             <div class="ghost-panel-body">
                 <div class="monitor-grid" style="padding: 6px 0;">
@@ -534,12 +577,10 @@ $tempLogs = array_reverse($pdo->query(
                     </td>
                     <td style="font-size:.85rem;color:var(--ghost-muted);"><?= htmlspecialchars($b['incubator_name']) ?>
                     </td>
-                    <td style="font-weight:600;"><?= $b['egg_count'] ?></td>
-                    <td style="font-size:.82rem;color:var(--ghost-muted);">
-                        <?= date('M j, Y',strtotime($b['start_date'])) ?></td>
-                    <td style="font-size:.82rem;color:var(--ghost-muted);">
-                        <?= !empty($b['session_start_time']) ? date('H:i', strtotime($b['session_start_time'])) : '—' ?>
-                    </td>
+                    <td style="font-weight:600;"><?= htmlspecialchars(displayEggCountForRow($b)) ?></td>
+                    <?php $startTs = extractBatchStartTimestamp($b); ?>
+                    <td style="font-size:.82rem;color:var(--ghost-muted);"><?= $startTs ? date('M j, Y', $startTs) : '—' ?></td>
+                    <td style="font-size:.82rem;color:var(--ghost-muted);"><?= $startTs ? date('H:i', $startTs) : '—' ?></td>
                     <td>
                         <div style="font-size:.85rem;"><?= date('M j, Y',strtotime($b['expected_hatch_date'])) ?></div>
                         <div style="font-size:.72rem;color:<?= $days<=3?'#f87171':'var(--ghost-muted)' ?>;">
@@ -1755,7 +1796,7 @@ const confirmModalHtml = `
       <div class="modal-body" id="confirmActionBody" style="padding:24px;white-space:pre-line;">Are you sure?</div>
       <div class="modal-footer">
         <button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn-ghost" id="confirmActionOk">Confirm</button>
+        <button type="button" class="btn-ghost" id="confirmActionOk">Confirm</button>
       </div>
     </div>
   </div>
@@ -1790,9 +1831,9 @@ const startConfirmModalHtml = `
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button>
-                <button class="btn-success-ghost" id="startNowBtn">▶ Start Now</button>
-                <button class="btn-ghost" id="startScheduleBtn">⏰ Schedule for Later</button>
+                <button type="button" class="btn-ghost" id="startScheduleBtn">⏰ Schedule for Later</button>
+                <button type="button" class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn-success-ghost" id="startNowBtn">▶ Start Now</button>
             </div>
         </div>
     </div>
@@ -1801,6 +1842,35 @@ const startConfirmModalHtml = `
     if (!document.getElementById('startConfirmModal')) document.body.insertAdjacentHTML('beforeend',
         startConfirmModalHtml);
 })();
+
+const conflictModalHtml = `
+<div class="modal fade" id="conflictModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:720px;">
+        <div class="modal-content modal-ghost">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title">Schedule Conflict</h5>
+                    <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;">A scheduled task conflicts with this session</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" style="padding:24px;">
+                <div id="conflictList" style="margin-bottom:12px;"></div>
+                <div style="font-size:.78rem;color:var(--ghost-muted);">Choose to adjust the session duration or proceed and cancel the conflicting schedules.</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-outline-ghost" data-bs-dismiss="modal">Adjust Duration</button>
+                <button type="button" class="btn-ghost" id="conflictProceedBtn">Proceed and Cancel Scheduled Tasks</button>
+            </div>
+        </div>
+    </div>
+</div>`;
+
+function ensureConflictModalExists() {
+    if (!document.getElementById('conflictModal')) {
+        document.body.insertAdjacentHTML('beforeend', conflictModalHtml);
+    }
+}
 
 function showConfirm(title, message, onConfirm) {
     const el = document.getElementById('confirmActionModal');
@@ -1833,6 +1903,18 @@ function showConfirm(title, message, onConfirm) {
         if (typeof onConfirm === 'function') onConfirm();
     }
     ok.addEventListener('click', okHandler);
+}
+
+function setStartSessionQuickBusy(isBusy) {
+    window.__ghostStartSessionQuickBusy = !!isBusy;
+    const btn = document.getElementById('btnStart');
+    if (btn) {
+        btn.disabled = !!isBusy || (typeof liveSessionState !== 'undefined' && liveSessionState && liveSessionState.status === 'running');
+    }
+}
+
+function clearStartSessionQuickBusy() {
+    setStartSessionQuickBusy(false);
 }
 
 function showStartConfirm(message, defaultEggCount, onConfirm) {
@@ -1915,7 +1997,8 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
         return val;
     }
 
-    function startNowHandler() {
+    function startNowHandler(event) {
+        if (event) event.preventDefault();
         const eggCount = getEggCount();
         if (!eggCount) return;
 
@@ -1927,7 +2010,8 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
 
     startNowBtn.addEventListener('click', startNowHandler);
 
-    function goToSchedulePageHandler() {
+    function goToSchedulePageHandler(event) {
+        if (event) event.preventDefault();
         const eggCount = getEggCount();
         if (!eggCount) return;
 
@@ -2040,8 +2124,14 @@ function startSessionQuick() {
         return;
     }
 
+    if (window.__ghostStartSessionQuickBusy) {
+        return;
+    }
+    setStartSessionQuickBusy(true);
+
     // Check if a session is already running
     if (liveSessionState.status === 'running') {
+        clearStartSessionQuickBusy();
         showFb('❌ A session is already running on this incubator. Stop it first before starting a new one.', 'danger');
         console.error('[startSessionQuick] ERROR: Session already running');
         return;
@@ -2086,33 +2176,6 @@ function startSessionQuick() {
         const minT = numOrFallback(dataset.min, source ? source.min_temp : null, localMinT) ?? localMinT;
         const maxT = numOrFallback(dataset.max, source ? source.max_temp : null, localMaxT) ?? localMaxT;
 
-        // Conflict modal HTML: shows conflicting scheduled items and offers Adjust or Proceed
-        const conflictModalHtml = `
-            <div class="modal fade" id="conflictModal" tabindex="-1">
-                <div class="modal-dialog modal-dialog-centered" style="max-width:720px;">
-                    <div class="modal-content modal-ghost">
-                        <div class="modal-header">
-                            <div>
-                                <h5 class="modal-title">Schedule Conflict</h5>
-                                <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;">A scheduled task conflicts with this session</div>
-                            </div>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body" style="padding:24px;">
-                            <div id="conflictList" style="margin-bottom:12px;"></div>
-                            <div style="font-size:.78rem;color:var(--ghost-muted);">Choose to adjust the session duration or proceed and cancel the conflicting schedules.</div>
-                        </div>
-                        <div class="modal-footer">
-                            <button class="btn-outline-ghost" data-bs-dismiss="modal">Adjust Duration</button>
-                            <button class="btn-ghost" id="conflictProceedBtn">Proceed and Cancel Scheduled Tasks</button>
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-        (function() {
-            if (!document.getElementById('conflictModal')) document.body.insertAdjacentHTML('beforeend',
-                conflictModalHtml);
-        })();
         const targetH = numOrFallback(dataset.th, source ? source.target_humidity : null, localTargetH) ?? localTargetH;
         const minH = numOrFallback(dataset.thmin, source ? source.min_humidity : null, localMinH) ?? localMinH;
         const maxH = numOrFallback(dataset.thmax, source ? source.max_humidity : null, localMaxH) ?? localMaxH;
@@ -2221,11 +2284,13 @@ function startSessionQuick() {
                     .length === 0) {
                     const msg = buildConfirmMessage((res && res.success) ? res : null,
                         eggCount);
+                    clearStartSessionQuickBusy();
                     showStartConfirm(msg, eggCount, startNow);
                     return;
                 }
                 // List conflicts and prompt user
                 const conflicts = confRes.conflicts;
+                ensureConflictModalExists();
                 const listEl = document.getElementById('conflictList');
                 if (listEl) listEl.innerHTML = '';
                 const scheduleIds = [];
@@ -2244,6 +2309,7 @@ function startSessionQuick() {
                 const conflictModalEl = document.getElementById('conflictModal');
                 const conflictModal = conflictModalEl ? new bootstrap.Modal(conflictModalEl) :
                     null;
+                clearStartSessionQuickBusy();
                 if (conflictModal) conflictModal.show();
                 const proceedBtn = document.getElementById('conflictProceedBtn');
                 const adjustBtn = document.querySelector('#conflictModal .btn-outline-ghost');
@@ -2294,6 +2360,7 @@ function startSessionQuick() {
                 response: xhr.responseText
             });
             const msg = buildConfirmMessage((res && res.success) ? res : null, 0);
+                clearStartSessionQuickBusy();
             showStartConfirm(msg, 0, startNow);
         });
     }, 'json').fail(function(xhr, status, error) {
@@ -2302,6 +2369,7 @@ function startSessionQuick() {
             error,
             response: xhr.responseText
         });
+                clearStartSessionQuickBusy();
         // On failure to fetch settings, continue as before
         showStartConfirm(buildConfirmMessage(null, 0), 0, startNow);
     });
@@ -2311,6 +2379,7 @@ function stopSessionQuick() {
     const incId = document.getElementById('qc_incubator_id').value;
     if (!incId) {
         showFb('No incubator selected', 'warning');
+        clearStartSessionQuickBusy();
         return;
     }
     showConfirm('Terminate session',

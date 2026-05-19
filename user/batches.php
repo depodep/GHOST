@@ -7,6 +7,111 @@ $pdo = getDB();
 $uid = $_SESSION['user_id'];
 $batches = $pdo->prepare("SELECT b.*, i.name as incubator_name FROM batches b JOIN incubators i ON b.incubator_id=i.id WHERE b.user_id=? ORDER BY b.created_at DESC"); $batches->execute([$uid]); $batches = $batches->fetchAll();
 $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'")->fetchAll();
+
+foreach ($batches as &$batchRow) {
+  $status = isset($batchRow['status']) ? trim((string)$batchRow['status']) : '';
+  if ($status !== 'scheduled') {
+    continue;
+  }
+
+  $scheduledAt = extractBatchStartTimestamp($batchRow);
+  if (!$scheduledAt || $scheduledAt > time()) {
+    continue;
+  }
+
+  $hwStmt = $pdo->prepare("SELECT session_status FROM hardware_state WHERE incubator_id = ? LIMIT 1");
+  $hwStmt->execute([(int)$batchRow['incubator_id']]);
+  $sessionStatus = (string)($hwStmt->fetchColumn() ?: '');
+
+  if ($sessionStatus === 'running') {
+    $pdo->prepare("UPDATE batches SET status='incubating' WHERE id=? AND status='scheduled'")
+        ->execute([(int)$batchRow['id']]);
+    $batchRow['status'] = 'incubating';
+  } else {
+    $pdo->prepare("UPDATE batches SET status='failed', terminated_at = COALESCE(terminated_at, NOW()) WHERE id=? AND status='scheduled'")
+        ->execute([(int)$batchRow['id']]);
+    $pdo->prepare("UPDATE schedules SET status='failed' WHERE batch_id=? AND status='pending'")
+        ->execute([(int)$batchRow['id']]);
+    $batchRow['status'] = 'failed';
+  }
+}
+unset($batchRow);
+
+function formatBatchDateTime(?string $date, ?string $time = null, ?string $notes = null): string {
+  $scheduledStart = null;
+  if (!empty($notes) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
+    $scheduledStart = $matches[1];
+  }
+
+  $value = $scheduledStart ?: trim((string)$date . ' ' . trim((string)($time ?? '00:00:00')));
+  $timestamp = strtotime($value);
+  if (!$timestamp) {
+    return '—';
+  }
+
+  return date('F j, Y H:i', $timestamp);
+}
+
+function displayBatchEggCount(array $batch): string {
+  $eggCount = isset($batch['egg_count']) ? (int)$batch['egg_count'] : 0;
+  if ($eggCount <= 0 && !empty($batch['batch_name']) && preg_match('/(\d+)\s*eggs/i', $batch['batch_name'], $matches)) {
+    $eggCount = (int)$matches[1];
+  }
+
+  return (string)$eggCount;
+}
+
+// Compatibility wrappers used by dashboard and other pages
+function extractBatchStartTimestamp($b) {
+  if (!empty($b['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $b['notes'], $m)) {
+    $ts = strtotime($m[1]);
+    if ($ts !== false) return $ts;
+  }
+  if (!empty($b['session_start_time'])) {
+    $ts = strtotime($b['session_start_time']);
+    if ($ts !== false) return $ts;
+  }
+  if (!empty($b['start_date'])) {
+    $ts = strtotime($b['start_date'] . ' 00:00:00');
+    if ($ts !== false) return $ts;
+  }
+  return null;
+}
+
+function displayEggCountForRow($b) {
+  $val = displayBatchEggCount($b);
+  $n = is_numeric($val) ? (int)$val : 0;
+  return $n > 0 ? number_format($n) : '—';
+}
+
+function batchStatusTimeLabel(array $batch): string {
+  $status = isset($batch['status']) ? strtolower(trim((string)$batch['status'])) : '';
+
+  if ($status === 'scheduled') {
+    return formatBatchDateTime($batch['start_date'] ?? null, null, $batch['notes'] ?? null);
+  }
+
+  if ($status === 'completed' && !empty($batch['completed_at'])) {
+    return date('F j, Y H:i', strtotime($batch['completed_at']));
+  }
+
+  if (in_array($status, ['terminated', 'cancelled', 'failed'], true)) {
+    if (!empty($batch['terminated_at'])) {
+      return date('F j, Y H:i', strtotime($batch['terminated_at']));
+    }
+    if (!empty($batch['completed_at'])) {
+      return date('F j, Y H:i', strtotime($batch['completed_at']));
+    }
+    if (!empty($batch['notes'])) {
+      $scheduled = extractBatchStartTimestamp($batch);
+      if ($scheduled) {
+        return date('F j, Y H:i', $scheduled);
+      }
+    }
+  }
+
+  return '—';
+}
 ?>
 <div class="d-flex justify-content-end mb-4">
   <a href="schedule.php" class="btn btn-primary">
@@ -20,19 +125,18 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
       <thead><tr><th>Batch Name</th><th>Incubator</th><th>Eggs</th><th>Start</th><th>Hatch Date</th><th>Status</th><th>Status Time</th><th>Actions</th></tr></thead>
       <tbody>
       <?php foreach($batches as $b): $days=max(0,round((strtotime($b['expected_hatch_date'])-time())/86400));
-        $statusTime = null;
-        if ($b['status'] === 'completed') { $statusTime = $b['completed_at'] ?? null; }
-        if ($b['status'] === 'terminated') { $statusTime = $b['terminated_at'] ?? null; }
+        $startTime = formatBatchDateTime($b['start_date'] ?? null, null, $b['notes'] ?? null);
+        $statusTimeDisplay = batchStatusTimeLabel($b);
       ?>
         <tr>
           <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div><?php if($b['notes']): ?><div style="font-size:.72rem;color:var(--ghost-muted);"><?= substr(htmlspecialchars($b['notes']),0,40) ?>...</div><?php endif; ?></td>
           <td style="font-size:.85rem;"><?= htmlspecialchars($b['incubator_name']) ?></td>
-          <td style="font-weight:600;"><?= $b['egg_count'] ?></td>
-          <td style="font-size:.82rem;color:var(--ghost-muted);"><?= date('M j, Y',strtotime($b['start_date'])) ?></td>
+          <td style="font-weight:600;"><?= htmlspecialchars(displayBatchEggCount($b)) ?></td>
+          <td style="font-size:.82rem;color:var(--ghost-muted);"><?= htmlspecialchars($startTime) ?></td>
           <td><div style="font-size:.85rem;"><?= date('M j, Y',strtotime($b['expected_hatch_date'])) ?></div><div style="font-size:.72rem;color:<?= $days<=3&&$b['status']=='incubating'?'#f87171':'var(--ghost-muted)' ?>;"><?= $b['status']=='incubating'?($days>0?$days.' days left':'Hatch day!'):'' ?></div></td>
           <td><span class="badge-<?= $b['status'] ?>"><?= $b['status'] ?></span></td>
           <td style="font-size:.82rem;color:var(--ghost-muted);">
-            <?= $statusTime ? date('M j, Y H:i', strtotime($statusTime)) : '—' ?>
+            <?= htmlspecialchars($statusTimeDisplay) ?>
           </td>
           <td><div class="d-flex gap-2">
             <button class="btn-edit-ghost" onclick="viewBatchSummary(<?= $b['id'] ?>)"><i class="fas fa-eye"></i></button>

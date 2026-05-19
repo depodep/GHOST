@@ -5,6 +5,7 @@ $activePage = 'schedules';
 require_once 'header.php';
 $pdo = getDB();
 $uid = $_SESSION['user_id'];
+$scheduleGraceSeconds = 300;
 
 // Ensure schedule statuses reflect actual batch state:
 // 1) If a schedule is pending but its linked batch has been promoted to incubating, mark schedule as 'running'
@@ -21,15 +22,180 @@ $setFailedStmt = $pdo->prepare(
     SET s.status = 'failed'
     WHERE s.status = 'pending'
       AND s.created_by_role = 'user' AND s.created_by_id = ?
-      AND CONCAT(s.scheduled_date, ' ', s.scheduled_time) < NOW()
+            AND TIMESTAMPDIFF(SECOND, CONCAT(s.scheduled_date, ' ', s.scheduled_time), NOW()) > ?
       AND (s.batch_id IS NULL OR b.status <> 'incubating')"
 );
-$setFailedStmt->execute([$uid]);
+$setFailedStmt->execute([$uid, $scheduleGraceSeconds]);
 
-$schedules = $pdo->prepare("SELECT s.*, i.name as incubator_name, b.batch_name FROM schedules s JOIN incubators i ON s.incubator_id=i.id LEFT JOIN batches b ON s.batch_id=b.id WHERE s.created_by_role='user' AND s.created_by_id=? ORDER BY s.scheduled_date DESC, s.scheduled_time DESC");
+$schedules = $pdo->prepare("SELECT s.*, i.name as incubator_name, b.batch_name FROM schedules s JOIN incubators i ON s.incubator_id=i.id LEFT JOIN batches b ON s.batch_id=b.id WHERE s.created_by_role='user' AND s.created_by_id=? AND s.status IN ('pending','running') ORDER BY s.scheduled_date DESC, s.scheduled_time DESC");
 $schedules->execute([$uid]); $schedules = $schedules->fetchAll();
+
+foreach ($schedules as &$scheduleRow) {
+    $status = isset($scheduleRow['status']) ? trim((string)$scheduleRow['status']) : '';
+    if ($status !== 'pending') {
+        continue;
+    }
+
+    $scheduledAt = strtotime(trim((string)($scheduleRow['scheduled_date'] ?? '') . ' ' . trim((string)($scheduleRow['scheduled_time'] ?? '00:00:00'))));
+    if (!$scheduledAt || ($scheduledAt + $scheduleGraceSeconds) > time()) {
+        continue;
+    }
+
+    $isIncubating = false;
+    if (!empty($scheduleRow['batch_id'])) {
+        $batchCheck = $pdo->prepare("SELECT status FROM batches WHERE id = ? LIMIT 1");
+        $batchCheck->execute([(int)$scheduleRow['batch_id']]);
+        $isIncubating = (($batchCheck->fetchColumn() ?: '') === 'incubating');
+    }
+
+    if ($isIncubating) {
+        continue;
+    }
+
+    $pdo->prepare("UPDATE schedules SET status = 'failed' WHERE id = ? AND status = 'pending'")
+        ->execute([(int)$scheduleRow['id']]);
+    if (!empty($scheduleRow['batch_id'])) {
+        $pdo->prepare("UPDATE batches SET status = 'failed' WHERE id = ? AND status IN ('scheduled', 'incubating')")
+            ->execute([(int)$scheduleRow['batch_id']]);
+    }
+
+    $scheduleRow['status'] = 'failed';
+}
+unset($scheduleRow);
 $incubators = $pdo->query("SELECT id,name,location,capacity FROM incubators WHERE status='active'")->fetchAll();
+$settingsRows = $pdo->query("SELECT incubator_id, target_temp, min_temp, max_temp, target_humidity, min_humidity, max_humidity FROM temperature_settings")->fetchAll();
+$settingsByIncubator = [];
+foreach ($settingsRows as $row) {
+    $settingsByIncubator[(int)$row['incubator_id']] = [
+        'target_temp' => $row['target_temp'],
+        'min_temp' => $row['min_temp'],
+        'max_temp' => $row['max_temp'],
+        'target_humidity' => $row['target_humidity'],
+        'min_humidity' => $row['min_humidity'],
+        'max_humidity' => $row['max_humidity']
+    ];
+}
 $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE user_id=? AND status='incubating'"); $batches_q->execute([$uid]); $myBatches = $batches_q->fetchAll();
+$batchConflict_q = $pdo->prepare("SELECT id, batch_name, incubator_id, status, start_date, expected_hatch_date, notes FROM batches WHERE user_id=? AND status IN ('scheduled','incubating')");
+$batchConflict_q->execute([$uid]);
+$batchConflictRows = $batchConflict_q->fetchAll();
+
+$activeSession_q = $pdo->prepare(
+    "SELECT incubator_id, active_session_name, session_started_at, session_ends_at
+     FROM hardware_state
+     WHERE session_status = 'running'"
+);
+$activeSession_q->execute();
+$activeSessionRows = $activeSession_q->fetchAll();
+
+function scheduleDateTimeLabel(array $schedule): string {
+    $timestamp = strtotime(trim((string)($schedule['scheduled_date'] ?? '') . ' ' . trim((string)($schedule['scheduled_time'] ?? '00:00:00'))));
+    if (!$timestamp) {
+        return '—';
+    }
+    return date('M j, Y H:i', $timestamp);
+}
+
+function scheduleDurationSeconds(array $schedule): int {
+    $description = [];
+    if (!empty($schedule['description'])) {
+        $decoded = json_decode((string)$schedule['description'], true);
+        if (is_array($decoded)) {
+            $description = $decoded;
+        }
+    }
+
+    if (isset($description['session_duration_sec'])) {
+        return max(1, (int)$description['session_duration_sec']);
+    }
+
+    if (isset($schedule['duration_hours']) && $schedule['duration_hours'] !== null && $schedule['duration_hours'] !== '') {
+        return max(1, (int)round(((float)$schedule['duration_hours']) * 3600));
+    }
+
+    return 21 * 86400;
+}
+
+function scheduleEndLabel(array $schedule): string {
+    $start = strtotime(trim((string)($schedule['scheduled_date'] ?? '') . ' ' . trim((string)($schedule['scheduled_time'] ?? '00:00:00'))));
+    if (!$start) {
+        return '—';
+    }
+    $end = $start + scheduleDurationSeconds($schedule);
+    return date('M j, Y H:i', $end);
+}
+
+function scheduleDurationLabel(array $schedule): string {
+    $seconds = scheduleDurationSeconds($schedule);
+    $days = intdiv($seconds, 86400);
+    $hours = intdiv($seconds % 86400, 3600);
+    $minutes = intdiv($seconds % 3600, 60);
+    $parts = [];
+    if ($days > 0) $parts[] = $days . 'd';
+    if ($hours > 0 || $days > 0) $parts[] = str_pad((string)$hours, 2, '0', STR_PAD_LEFT) . 'h';
+    $parts[] = str_pad((string)$minutes, 2, '0', STR_PAD_LEFT) . 'm';
+    return implode(' ', $parts);
+}
+
+$scheduleConflictWindows = [];
+foreach ($schedules as $scheduleRow) {
+    $scheduleStatus = isset($scheduleRow['status']) ? trim((string)$scheduleRow['status']) : '';
+    if (!in_array($scheduleStatus, ['pending', 'running'], true)) {
+        continue;
+    }
+
+    $start = strtotime(trim((string)($scheduleRow['scheduled_date'] ?? '') . ' ' . trim((string)($scheduleRow['scheduled_time'] ?? '00:00:00'))));
+    if (!$start) {
+        continue;
+    }
+    $scheduleConflictWindows[] = [
+        'id' => (int)$scheduleRow['id'],
+        'title' => (string)$scheduleRow['title'],
+        'incubator_id' => (int)($scheduleRow['incubator_id'] ?? 0),
+        'start' => $start,
+        'end' => $start + scheduleDurationSeconds($scheduleRow),
+        'source' => 'schedule',
+        'status' => $scheduleStatus
+    ];
+}
+
+foreach ($batchConflictRows as $batchRow) {
+    $batchWindowStart = null;
+    if (!empty($batchRow['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $batchRow['notes'], $matches)) {
+        $batchWindowStart = strtotime($matches[1]);
+    }
+    if (!$batchWindowStart && !empty($batchRow['start_date'])) {
+        $batchWindowStart = strtotime((string)$batchRow['start_date'] . ' 00:00:00');
+    }
+    $batchWindowEnd = !empty($batchRow['expected_hatch_date']) ? strtotime((string)$batchRow['expected_hatch_date'] . ' 23:59:59') : false;
+    if ($batchWindowStart && $batchWindowEnd) {
+        $scheduleConflictWindows[] = [
+            'id' => (int)$batchRow['id'],
+            'title' => (string)$batchRow['batch_name'],
+            'incubator_id' => (int)($batchRow['incubator_id'] ?? 0),
+            'start' => $batchWindowStart,
+            'end' => $batchWindowEnd,
+            'source' => 'batch',
+            'status' => (string)($batchRow['status'] ?? '')
+        ];
+    }
+}
+
+foreach ($activeSessionRows as $sessionRow) {
+    $sessionStart = !empty($sessionRow['session_started_at']) ? strtotime($sessionRow['session_started_at']) : false;
+    $sessionEnd = !empty($sessionRow['session_ends_at']) ? strtotime($sessionRow['session_ends_at']) : false;
+    if ($sessionStart && $sessionEnd && $sessionEnd > $sessionStart) {
+        $scheduleConflictWindows[] = [
+            'id' => 0,
+            'title' => !empty($sessionRow['active_session_name']) ? (string)$sessionRow['active_session_name'] : 'Active Session',
+            'incubator_id' => (int)($sessionRow['incubator_id'] ?? 0),
+            'start' => $sessionStart,
+            'end' => $sessionEnd,
+            'source' => 'active_session',
+            'status' => 'running'
+        ];
+    }
+}
 ?>
 <div class="d-flex justify-content-end mb-4">
     <button class="btn-ghost" data-bs-toggle="modal" data-bs-target="#addSchedModal"><i class="fas fa-plus me-2"></i>Add
@@ -41,33 +207,44 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
         <table class="ghost-table">
             <thead>
                 <tr>
+                    <th>No#</th>
                     <th>Title</th>
                     <th>Incubator</th>
-                    <th>Date & Time</th>
+                    <th>Start (Date & Time)</th>
+                    <th>End</th>
+                    <th>Duration</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach($schedules as $s): ?>
+                <?php foreach($schedules as $index => $s): ?>
                 <?php
                   // Normalize status for display when DB value is empty or null
                   $rawStatus = isset($s['status']) ? trim((string)$s['status']) : '';
                   $displayStatus = $rawStatus !== '' ? $rawStatus : 'pending';
                   $badgeClass = 'badge-' . $displayStatus;
+                  $batchLabel = !empty($s['batch_name']) ? htmlspecialchars($s['batch_name']) : '';
                 ?>
                 <tr>
+                    <td style="font-size:.85rem;color:var(--ghost-muted);font-weight:700;">#<?= $index + 1 ?></td>
                     <td>
                         <div style="font-weight:600;color:white;"><?= htmlspecialchars($s['title']) ?></div>
-                        <?php if($s['batch_name']): ?><div style="font-size:.72rem;color:var(--ghost-muted);">
-                            <?= htmlspecialchars($s['batch_name']) ?></div><?php endif; ?>
+                        <?php if($batchLabel): ?><div style="font-size:.72rem;color:var(--ghost-muted);">
+                            <?= $batchLabel ?></div><?php endif; ?>
                     </td>
                     <td style="font-size:.85rem;"><?= htmlspecialchars($s['incubator_name']) ?></td>
                     <td>
                         <div style="font-size:.85rem;font-weight:600;">
-                            <?= date('M j, Y',strtotime($s['scheduled_date'])) ?></div>
-                        <div style="font-size:.72rem;color:var(--ghost-muted);"><?= substr($s['scheduled_time'],0,5) ?>
-                        </div>
+                            <?= htmlspecialchars(scheduleDateTimeLabel($s)) ?></div>
+                    </td>
+                    <td>
+                        <div style="font-size:.85rem;font-weight:600;">
+                            <?= htmlspecialchars(scheduleEndLabel($s)) ?></div>
+                    </td>
+                    <td>
+                        <div style="font-size:.85rem;font-weight:600;">
+                            <?= htmlspecialchars(scheduleDurationLabel($s)) ?></div>
                     </td>
                     <td><span class="<?= $badgeClass ?>"><?= htmlspecialchars($displayStatus) ?></span></td>
                     <td>
@@ -79,8 +256,8 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
                             <button class="btn-edit-ghost"
                                 onclick='editSched(<?= htmlspecialchars(json_encode($s), ENT_QUOTES) ?>)'><i
                                     class="fas fa-pen"></i></button>
-                            <button class="btn-danger-ghost" onclick="deleteSched(<?= (int)$s['id'] ?>)"><i
-                                    class="fas fa-trash"></i></button>
+                                <button class="btn-danger-ghost" onclick="cancelSched(<?= (int)$s['id'] ?>)" title="Cancel schedule"><i
+                                    class="fas fa-ban"></i></button>
                             <?php endif; ?>
                         </div>
                     </td>
@@ -675,6 +852,37 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
 </div>
 
 <script>
+const incubatorSettingPresets = <?= json_encode($settingsByIncubator, JSON_UNESCAPED_SLASHES) ?>;
+const scheduleConflictWindows = <?= json_encode($scheduleConflictWindows, JSON_UNESCAPED_SLASHES) ?>;
+
+function applyIncubatorPresets(prefix = 'as', force = false) {
+    const incubatorSelect = document.getElementById(`${prefix}_incubator`);
+    if (!incubatorSelect) return;
+
+    const incubatorId = parseInt(incubatorSelect.value, 10);
+    const preset = incubatorSettingPresets[String(incubatorId)] || incubatorSettingPresets[incubatorId];
+    if (!preset) return;
+
+    const fieldMap = [
+        ['target_temp', `${prefix}_target_temp`],
+        ['min_temp', `${prefix}_min_temp`],
+        ['max_temp', `${prefix}_max_temp`],
+        ['target_humidity', `${prefix}_target_hum`],
+        ['min_humidity', `${prefix}_min_hum`],
+        ['max_humidity', `${prefix}_max_hum`]
+    ];
+
+    fieldMap.forEach(([presetKey, inputId]) => {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        const hasValue = String(input.value || '').trim() !== '';
+        if (!force && hasValue) return;
+        const presetValue = preset[presetKey];
+        if (presetValue === null || typeof presetValue === 'undefined' || presetValue === '') return;
+        input.value = presetValue;
+    });
+}
+
 function formatIntervalMinutes(hours) {
     if (!Number.isFinite(hours) || hours <= 0) return '';
     const minutes = hours * 60;
@@ -796,6 +1004,8 @@ function syncScheduleIncubator(prefix = 'as') {
             selectedIncubator.dataset.loc :
             '—';
     }
+    // Auto-fill temp/humidity from incubator settings if fields are empty.
+    applyIncubatorPresets(prefix, false);
     updateSchedulePreview(prefix);
 }
 
@@ -810,12 +1020,16 @@ function resetScheduleDurationDefaults(prefix = 'as') {
     document.getElementById(`${prefix}_sw_interval`).value = 8;
     const titleInput = document.getElementById(`${prefix}_title`);
     if (titleInput) titleInput.value = '';
+    // On add flow, always refresh to latest incubator presets.
+    applyIncubatorPresets(prefix, true);
     updateSchedulePreview(prefix);
 }
 
 function updateSchedulePreview(prefix = 'as') {
     const startDate = document.getElementById(`${prefix}_start_date`)?.value;
     const startTime = document.getElementById(`${prefix}_start_time`)?.value || '00:00';
+    const incubatorId = document.getElementById(`${prefix}_incubator`)?.value || '';
+    const batchId = document.getElementById(`${prefix}_batch`)?.value || '';
     const days = parseInt(document.getElementById(`${prefix}_duration_days`)?.value, 10) || 0;
     const hours = parseInt(document.getElementById(`${prefix}_duration_hours`)?.value, 10) || 0;
     const minutes = parseInt(document.getElementById(`${prefix}_duration_minutes`)?.value, 10) || 0;
@@ -859,10 +1073,61 @@ function updateSchedulePreview(prefix = 'as') {
     const conflictText = document.getElementById(`${prefix}_conflict_text`);
     const conflictSubtext = document.getElementById(`${prefix}_conflict_subtext`);
     if (conflictBox && conflictText && conflictSubtext) {
-        conflictBox.style.borderColor = 'rgba(34,197,94,.18)';
-        conflictText.textContent = 'No conflict detected.';
-        conflictSubtext.textContent = 'The selected time range is available.';
+        const excludeId = prefix === 'es2' ? document.getElementById('es2_id')?.value : null;
+        const conflict = detectScheduleConflict(start.getTime(), end.getTime(), incubatorId, excludeId, batchId);
+        if (conflict) {
+            conflictBox.style.borderColor = 'rgba(239,68,68,.22)';
+            const conflictPrefix = conflict.source === 'active_session'
+                ? 'Active session'
+                : conflict.source === 'batch'
+                    ? 'Batch'
+                    : 'Schedule';
+            conflictText.textContent = `Conflicts with ${conflictPrefix}: ${conflict.title}`;
+            conflictSubtext.textContent = `Overlaps ${formatPreviewDateTime(conflict.start)} → ${formatPreviewDateTime(conflict.end)}`;
+        } else {
+            conflictBox.style.borderColor = 'rgba(34,197,94,.18)';
+            conflictText.textContent = 'No conflict detected.';
+            conflictSubtext.textContent = 'The selected time range is available.';
+        }
     }
+}
+
+function formatPreviewDateTime(epochSeconds) {
+    const dt = new Date(epochSeconds * 1000);
+    if (Number.isNaN(dt.getTime())) return '—';
+    return dt.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+}
+
+function detectScheduleConflict(newStartMs, newEndMs, incubatorId = '', excludeScheduleId = null, excludeBatchId = null) {
+    if (!Array.isArray(scheduleConflictWindows)) return null;
+    const newStart = Math.floor(newStartMs / 1000);
+    const newEnd = Math.floor(newEndMs / 1000);
+    const excludedId = excludeScheduleId !== null && excludeScheduleId !== undefined && String(excludeScheduleId).trim() !== ''
+        ? String(excludeScheduleId)
+        : null;
+    const excludedBatchId = excludeBatchId !== null && excludeBatchId !== undefined && String(excludeBatchId).trim() !== ''
+        ? String(excludeBatchId)
+        : null;
+    const selectedIncubatorId = incubatorId !== null && incubatorId !== undefined && String(incubatorId).trim() !== ''
+        ? String(incubatorId)
+        : null;
+    return scheduleConflictWindows.find(window => {
+        if (selectedIncubatorId !== null && String(window.incubator_id || '') !== selectedIncubatorId) {
+            return false;
+        }
+        if (excludedId !== null && String(window.id) === excludedId) {
+            return false;
+        }
+        if (excludedBatchId !== null && window.source === 'batch' && String(window.id) === excludedBatchId) {
+            return false;
+        }
+        return newStart < window.end && newEnd > window.start;
+    }) || null;
 }
 
 document.getElementById('addSchedModal').addEventListener('show.bs.modal', function() {
@@ -993,16 +1258,16 @@ function updateSched() {
     performUpdate();
 }
 
-function deleteSched(id) {
-    showConfirm('Delete schedule', 'Delete this schedule?', function() {
-        showLoader('Deleting…');
+function cancelSched(id) {
+    showConfirm('Cancel schedule', 'Cancel this schedule? It will not be deleted.', function() {
+        showLoader('Cancelling…');
         $.post('../ajax/user_schedules.php', {
             action: 'delete',
             id
         }, r => {
             hideLoader();
             if (r.success) {
-                showToast('Deleted');
+                showToast('Cancelled');
                 setTimeout(() => location.reload(), 600);
             } else showToast(r.message, 'error');
         }, 'json');

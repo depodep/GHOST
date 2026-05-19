@@ -7,6 +7,82 @@ $pdo = getDB();
 $batches = $pdo->query("SELECT b.*, i.name as incubator_name, u.full_name as user_name FROM batches b JOIN incubators i ON b.incubator_id=i.id JOIN users u ON b.user_id=u.id ORDER BY b.created_at DESC")->fetchAll();
 $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'")->fetchAll();
 $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fetchAll();
+
+function formatBatchDateTime(?string $date, ?string $time = null, ?string $notes = null): string {
+  $scheduledStart = null;
+  if (!empty($notes) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
+    $scheduledStart = $matches[1];
+  }
+
+  $value = $scheduledStart ?: trim((string)$date . ' ' . trim((string)($time ?? '00:00:00')));
+  $timestamp = strtotime($value);
+  if (!$timestamp) {
+    return '—';
+  }
+
+  return date('F j, Y H:i', $timestamp);
+}
+
+function displayBatchEggCount(array $batch): string {
+  $eggCount = isset($batch['egg_count']) ? (int)$batch['egg_count'] : 0;
+  if ($eggCount <= 0 && !empty($batch['batch_name']) && preg_match('/(\d+)\s*eggs/i', $batch['batch_name'], $matches)) {
+    $eggCount = (int)$matches[1];
+  }
+
+  return (string)$eggCount;
+}
+
+// Compatibility wrappers used by dashboard and other pages
+function extractBatchStartTimestamp($b) {
+  if (!empty($b['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $b['notes'], $m)) {
+    $ts = strtotime($m[1]);
+    if ($ts !== false) return $ts;
+  }
+  if (!empty($b['session_start_time'])) {
+    $ts = strtotime($b['session_start_time']);
+    if ($ts !== false) return $ts;
+  }
+  if (!empty($b['start_date'])) {
+    $ts = strtotime($b['start_date'] . ' 00:00:00');
+    if ($ts !== false) return $ts;
+  }
+  return null;
+}
+
+function displayEggCountForRow($b) {
+  $val = displayBatchEggCount($b);
+  $n = is_numeric($val) ? (int)$val : 0;
+  return $n > 0 ? number_format($n) : '—';
+}
+
+function batchStatusTimeLabel(array $batch): string {
+  $status = isset($batch['status']) ? strtolower(trim((string)$batch['status'])) : '';
+
+  if ($status === 'scheduled') {
+    return formatBatchDateTime($batch['start_date'] ?? null, null, $batch['notes'] ?? null);
+  }
+
+  if ($status === 'completed' && !empty($batch['completed_at'])) {
+    return date('F j, Y H:i', strtotime($batch['completed_at']));
+  }
+
+  if (in_array($status, ['terminated', 'cancelled', 'failed'], true)) {
+    if (!empty($batch['terminated_at'])) {
+      return date('F j, Y H:i', strtotime($batch['terminated_at']));
+    }
+    if (!empty($batch['completed_at'])) {
+      return date('F j, Y H:i', strtotime($batch['completed_at']));
+    }
+    if (!empty($batch['notes'])) {
+      $scheduled = extractBatchStartTimestamp($batch);
+      if ($scheduled) {
+        return date('F j, Y H:i', $scheduled);
+      }
+    }
+  }
+
+  return '—';
+}
 ?>
 <div class="d-flex justify-content-end mb-4">
   <button class="btn-ghost" data-bs-toggle="modal" data-bs-target="#addBatchModal"><i class="fas fa-plus me-2"></i>Add Batch</button>
@@ -18,20 +94,19 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
       <thead><tr><th>Batch</th><th>User</th><th>Incubator</th><th>Eggs</th><th>Start</th><th>Hatch Day</th><th>Status</th><th>Status Time</th><th>Actions</th></tr></thead>
       <tbody>
       <?php foreach($batches as $b): $days=max(0,round((strtotime($b['expected_hatch_date'])-time())/86400));
-        $statusTime = null;
-        if ($b['status'] === 'completed') { $statusTime = $b['completed_at'] ?? null; }
-        if ($b['status'] === 'terminated') { $statusTime = $b['terminated_at'] ?? null; }
+        $startTime = formatBatchDateTime($b['start_date'] ?? null, null, $b['notes'] ?? null);
+        $statusTimeDisplay = batchStatusTimeLabel($b);
       ?>
         <tr>
           <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div></td>
           <td style="font-size:.85rem;color:var(--ghost-muted);"><?= htmlspecialchars($b['user_name']) ?></td>
           <td style="font-size:.85rem;"><?= htmlspecialchars($b['incubator_name']) ?></td>
-          <td style="font-weight:600;"><?= $b['egg_count'] ?></td>
-          <td style="font-size:.82rem;color:var(--ghost-muted);"><?= date('M j, Y',strtotime($b['start_date'])) ?></td>
+          <td style="font-weight:600;"><?= htmlspecialchars(displayBatchEggCount($b)) ?></td>
+          <td style="font-size:.82rem;color:var(--ghost-muted);"><?= htmlspecialchars($startTime) ?></td>
           <td><div style="font-size:.85rem;"><?= date('M j, Y',strtotime($b['expected_hatch_date'])) ?></div><?php if($b['status']=='incubating'): ?><div style="font-size:.72rem;color:<?= $days<=3?'#f87171':'var(--ghost-muted)' ?>;"><?= $days>0?$days.' days':'Today!' ?></div><?php endif; ?></td>
           <td><span class="badge-<?= $b['status'] ?>"><?= $b['status'] ?></span></td>
           <td style="font-size:.82rem;color:var(--ghost-muted);">
-            <?= $statusTime ? date('M j, Y H:i', strtotime($statusTime)) : '—' ?>
+            <?= htmlspecialchars($statusTimeDisplay) ?>
           </td>
           <td><div class="d-flex gap-2">
             <?php if ($b['status'] === 'scheduled'): ?>

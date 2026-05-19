@@ -1,3 +1,16 @@
+<?php
+require_once '../includes/config.php';
+
+if (isUserLoggedIn()) {
+  header('Location: ' . BASE_URL . '/user/dashboard.php');
+  exit();
+}
+
+if (isAdminLoggedIn()) {
+  header('Location: ' . BASE_URL . '/admin/dashboard.php');
+  exit();
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>

@@ -94,11 +94,55 @@ $tempLogs = array_reverse($pdo->query(
   .status-dot { width:6px; height:6px; border-radius:50%; display:inline-block; background:#64748b; }
   .status-dot.on { background:#22c55e; box-shadow:0 0 0 0 rgba(34,197,94,.45); animation:ghostPulse 1.8s infinite; }
   @keyframes ghostPulse { 0% { box-shadow:0 0 0 0 rgba(34,197,94,.45); } 70% { box-shadow:0 0 0 10px rgba(34,197,94,0); } 100% { box-shadow:0 0 0 0 rgba(34,197,94,0); } }
+  .session-queue-banner { display:none; margin:0 0 18px 0; padding:18px 20px; border:1px solid rgba(245,166,35,.22); border-radius:18px; background:linear-gradient(135deg, rgba(245,166,35,.12), rgba(15,23,42,.92)); box-shadow:0 18px 40px rgba(0,0,0,.22); }
+  .session-queue-banner.active { display:block; }
+  .session-queue-top { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+  .session-queue-kicker { font-size:.7rem; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:#f5a623; margin-bottom:6px; }
+  .session-queue-title { font-size:1.05rem; font-weight:800; color:#fff; line-height:1.2; }
+  .session-queue-subtitle { margin-top:4px; font-size:.82rem; color:var(--ghost-muted); }
+  .session-queue-status { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; font-size:.78rem; font-weight:700; letter-spacing:.03em; background:rgba(245,166,35,.12); color:#f5a623; border:1px solid rgba(245,166,35,.22); white-space:nowrap; }
+  .session-queue-status.ready { background:rgba(34,197,94,.12); color:#22c55e; border-color:rgba(34,197,94,.22); }
+  .session-queue-status.failed { background:rgba(239,68,68,.12); color:#ef4444; border-color:rgba(239,68,68,.22); }
+  .session-queue-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; }
+  .session-queue-box { padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06); }
+  .session-queue-label { font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.12em; color:var(--ghost-muted); }
+  .session-queue-value { margin-top:5px; color:#fff; font-size:.96rem; font-weight:700; line-height:1.35; }
+  @media(max-width:768px) {
+    .session-queue-top { flex-direction:column; }
+    .session-queue-grid { grid-template-columns:1fr; }
+  }
   .control-buttons { display:flex; gap:10px; margin-top:14px; }
   .control-buttons button { flex:1; padding:10px; border:1px solid var(--ghost-border); background:rgba(255,255,255,.03); color:white; border-radius:8px; font-size:.85rem; font-weight:600; cursor:pointer; transition:all .3s ease; }
   .control-buttons button:hover:not(:disabled) { background:var(--ghost-amber); border-color:var(--ghost-amber); color:white; transform:translateY(-2px); }
   .control-buttons button:disabled { opacity:.35; cursor:not-allowed; background:rgba(255,255,255,.01); border-color:rgba(255,255,255,.04); color:var(--ghost-muted); }
 </style>
+<div id="sessionQueueBanner" class="session-queue-banner">
+  <div class="session-queue-top">
+    <div>
+      <div class="session-queue-kicker">Session queued</div>
+      <div class="session-queue-title" id="sessionQueueTitle">About to start</div>
+      <div class="session-queue-subtitle" id="sessionQueueSubtitle">Waiting for device heartbeat</div>
+    </div>
+    <div id="sessionQueueState" class="session-queue-status">
+      <span class="status-dot" style="background:#f5a623;"></span>
+      <span id="sessionQueueStateText">Queued</span>
+    </div>
+  </div>
+  <div class="session-queue-grid">
+    <div class="session-queue-box">
+      <div class="session-queue-label">Batch</div>
+      <div class="session-queue-value" id="sessionQueueBatch">—</div>
+    </div>
+    <div class="session-queue-box">
+      <div class="session-queue-label">Start / End</div>
+      <div class="session-queue-value" id="sessionQueueWindow">—</div>
+    </div>
+    <div class="session-queue-box">
+      <div class="session-queue-label">Countdown</div>
+      <div class="session-queue-value" id="sessionQueueCountdown">—</div>
+    </div>
+  </div>
+</div>
 <div class="ghost-panel mb-4">
   <div class="ghost-panel-header d-flex justify-content-between align-items-center">
     <span class="ghost-panel-title">🔧 Monitoring</span>
@@ -426,7 +470,13 @@ let liveSessionState = {
   runningOps: 'idle',
   wifiStatus: 'disconnected',
   lastEggTurnAt: null,
-  lastServerSync: null
+  lastServerSync: null,
+  nextStartAt: null,
+  nextStartEpoch: null,
+  nextEndsAt: null,
+  nextSessionName: null,
+  nextSessionStatus: 'idle',
+  scheduledBatchCount: 0
 };
 
 window.addEventListener('load', function() {
@@ -942,6 +992,66 @@ function setConnectionPill(state) {
   pill.textContent = online ? 'Connected' : 'Disconnected';
 }
 
+function formatDateTimeLabel(value) {
+  if (!value) return '—';
+  const normalized = String(value).replace(' ', 'T');
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return String(value).replace('T', ' ');
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function updatePendingSessionBanner() {
+  const banner = document.getElementById('sessionQueueBanner');
+  if (!banner) return;
+
+  const hasUpcomingSession = !!liveSessionState.nextStartAt && liveSessionState.nextSessionStatus !== 'idle' && liveSessionState.status !== 'running';
+  if (!hasUpcomingSession) {
+    banner.classList.remove('active');
+    return;
+  }
+
+  banner.classList.add('active');
+
+  const titleEl = document.getElementById('sessionQueueTitle');
+  const subtitleEl = document.getElementById('sessionQueueSubtitle');
+  const stateEl = document.getElementById('sessionQueueState');
+  const stateTextEl = document.getElementById('sessionQueueStateText');
+  const batchEl = document.getElementById('sessionQueueBatch');
+  const windowEl = document.getElementById('sessionQueueWindow');
+  const countdownEl = document.getElementById('sessionQueueCountdown');
+
+  const deviceOnline = liveSessionState.wifiStatus === 'connected';
+  if (titleEl) titleEl.textContent = 'About to start';
+  if (subtitleEl) subtitleEl.textContent = deviceOnline ? 'Device online, ready to start' : 'Waiting for device heartbeat';
+  if (stateEl) stateEl.className = `session-queue-status ${deviceOnline ? 'ready' : ''}`.trim();
+  if (stateTextEl) stateTextEl.textContent = deviceOnline ? 'Ready' : 'Waiting';
+
+  const batchLabel = liveSessionState.nextSessionName
+    ? liveSessionState.nextSessionName
+    : (liveSessionState.activeSessionName || (liveSessionState.activeBatchId ? `Batch #${liveSessionState.activeBatchId}` : 'Scheduled session'));
+  if (batchEl) batchEl.textContent = batchLabel;
+
+  const startLabel = formatDateTimeLabel(liveSessionState.nextStartAt);
+  const endLabel = formatDateTimeLabel(liveSessionState.nextEndsAt);
+  if (windowEl) windowEl.textContent = `${startLabel} → ${endLabel}`;
+
+  const startEpoch = liveSessionState.nextStartEpoch ? Number(liveSessionState.nextStartEpoch) : Date.parse(String(liveSessionState.nextStartAt).replace(' ', 'T'));
+  if (countdownEl) {
+    if (Number.isFinite(startEpoch)) {
+      const diffSeconds = Math.max(0, Math.floor((startEpoch - Date.now()) / 1000));
+      countdownEl.textContent = diffSeconds > 0 ? `Starts in ${formatCountdown(diffSeconds)}` : 'Waiting for device';
+    } else {
+      countdownEl.textContent = 'Waiting for device';
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════════════
 //  LIVE STATUS POLLING
 // ══════════════════════════════════════════════════════════
@@ -1020,6 +1130,13 @@ function fetchLiveStatus() {
     liveSessionState.wifiStatus = res.wifi_status || 'disconnected';
     liveSessionState.lastEggTurnAt = res.last_egg_turn_at || null;
     liveSessionState.lastServerSync = res.last_server_sync || res.last_seen || null;
+    liveSessionState.nextStartAt = res.next_session_start_at || null;
+    liveSessionState.nextStartEpoch = res.next_session_start_epoch || null;
+    liveSessionState.nextEndsAt = res.next_session_ends_at || null;
+    liveSessionState.nextSessionName = res.next_session_name || null;
+    liveSessionState.nextSessionStatus = res.next_session_status || 'idle';
+    liveSessionState.scheduledBatchCount = res.scheduled_batch_count || 0;
+    updatePendingSessionBanner();
     updateSessionCountdown();
   }, 'json');
 }
