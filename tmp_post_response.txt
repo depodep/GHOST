@@ -1,1 +1,0 @@
-{"success":true,"scheduled_start_datetime":"2026-05-19 09:40:46","session_status":"running","batch_id":30,"batch_name":"Alpha Unit - 4 eggs","egg_count":4,"egg_type":"Chicken","session_days":1,"session_duration_sec":86400,"session_started_at":"2026-05-19 09:40:46","session_ends_at":"2026-05-20 09:40:46","message":"Session started at 2026-05-19 09:40:46"}

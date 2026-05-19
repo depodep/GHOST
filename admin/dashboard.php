@@ -274,18 +274,6 @@ $tempLogs = array_reverse($pdo->query(
           <div><div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Location</div><div style="font-weight:700;color:white;font-size:.9rem;" id="inc_info_loc">—</div></div>
         </div>
 
-        <!-- Species / egg type -->
-        <div class="mb-3">
-          <label class="form-label-ghost">🐣 Egg Species / Type</label>
-          <select class="form-select-ghost" id="inc_species" onchange="applySpeciesDefaults()">
-            <option value="chicken"  data-target="37.5" data-min="37.0" data-max="38.0" data-hum="55" data-days="21">🐔 Chicken (21 days)</option>
-            <option value="duck"     data-target="37.5" data-min="37.2" data-max="38.0" data-hum="60" data-days="28">🦆 Duck (28 days)</option>
-            <option value="quail"    data-target="37.5" data-min="37.0" data-max="38.0" data-hum="50" data-days="18">🐦 Quail (18 days)</option>
-            <option value="turkey"   data-target="37.5" data-min="37.0" data-max="38.2" data-hum="55" data-days="28">🦃 Turkey (28 days)</option>
-            <option value="goose"    data-target="37.4" data-min="37.0" data-max="38.0" data-hum="60" data-days="30">🪿 Goose (30 days)</option>
-            <option value="custom"   data-target=""     data-min=""     data-max=""     data-hum=""   data-days="">⚙️ Custom</option>
-          </select>
-        </div>
 
         <div class="mb-3">
           <label class="form-label-ghost">🥚 Egg Count</label>
@@ -432,6 +420,7 @@ let liveSessionState = {
   endsAt: null,
   status: 'idle',
   currentMode: 'idle',
+  activeBatchId: null,
   activeSessionName: null,
   incubationDay: null,
   runningOps: 'idle',
@@ -524,11 +513,8 @@ function onIncubatorChange() {
 }
 
 function getIncubationFormValues() {
-  const species = document.getElementById('inc_species');
-  const speciesOption = species.options[species.selectedIndex];
   return {
     incId: document.getElementById('qc_incubator_id').value,
-    species: speciesOption.value,
     eggCount: readIntInput('inc_egg_count', 0, 1, 99999),
     targetTemp: readFloatInput('inc_target_temp', 37.5),
     minTemp: readFloatInput('inc_min_temp', 37.0),
@@ -538,7 +524,7 @@ function getIncubationFormValues() {
     maxHum: readFloatInput('inc_max_hum', 60.0),
     duration: readIntInput('sw_duration', 30, 5, 300),
     interval: readFloatInput('sw_interval', 8.0),
-    sessionDays: parseInt(speciesOption.dataset.days || '21', 10) || 21
+    sessionDays: 21
   };
 }
 
@@ -654,7 +640,6 @@ function saveIncubationSettings(startSession) {
         action: 'start_session',
         incubator_id: values.incId,
         egg_count: values.eggCount,
-        egg_type: values.species,
         session_days: values.sessionDays,
         token: 'ghost_hw_secret_2024'
       }, function(startRes) {
@@ -697,20 +682,6 @@ function openIncubateModal() {
   updateIntervalPreview('sw_interval', 'sw_interval_preview');
 
   new bootstrap.Modal(document.getElementById('incubateModal')).show();
-}
-
-function applySpeciesDefaults() {
-  const sp = document.getElementById('inc_species');
-  const o  = sp.options[sp.selectedIndex];
-  if (o.value === 'custom') return; // let user type freely
-  const t = parseFloat(o.dataset.target);
-  const h = parseFloat(o.dataset.hum);
-  document.getElementById('inc_target_temp').value = t;
-  document.getElementById('inc_min_temp').value    = (t - 0.5).toFixed(1);
-  document.getElementById('inc_max_temp').value    = (t + 0.5).toFixed(1);
-  document.getElementById('inc_target_hum').value  = h;
-  document.getElementById('inc_min_hum').value     = (h - 5).toFixed(1);
-  document.getElementById('inc_max_hum').value     = (h + 5).toFixed(1);
 }
 
 // Auto-adjust min/max to ±3 when target temperature/humidity inputs change
@@ -1011,6 +982,12 @@ function fetchLiveStatus() {
       setText('monitorSessionName', res.active_session_name || '—');
       setText('monitorMode', res.current_mode || 'Idle');
       setText('monitorLastSync', formatDisplayTime(res.last_server_sync || res.last_seen));
+
+      if (res.active_batch_id) {
+        setText('monitorParamsId', `Batch #${res.active_batch_id}`);
+      } else if (res.session_number) {
+        setText('monitorParamsId', `Session #${res.session_number}`);
+      }
     } else {
       // Show "--" for all values when offline
       setText('monitorTemp', '—');
@@ -1036,6 +1013,7 @@ function fetchLiveStatus() {
     liveSessionState.endsAt = res.session_ends_at || null;
     liveSessionState.status = res.session_status || 'idle';
     liveSessionState.currentMode = res.current_mode || 'idle';
+    liveSessionState.activeBatchId = res.active_batch_id || null;
     liveSessionState.activeSessionName = res.active_session_name || null;
     liveSessionState.incubationDay = res.incubation_day || null;
     liveSessionState.runningOps = res.running_ops || 'idle';

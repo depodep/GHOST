@@ -27,6 +27,7 @@
 #include <EEPROM.h>
 #include <DHT.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // ─────────────────────────────────────────────
 //  ★  USER CONFIGURATION — EDIT THESE  ★
@@ -153,6 +154,10 @@ SessionMode sessionMode = MODE_IDLE;
 // Session info
 char  sessionName[50]   = "";           // Batch/session name
 int   sessionId         = 0;            // From server
+char  nextSessionName[50] = "";         // Next scheduled batch/session name
+int   nextSessionId       = 0;           // Next scheduled batch/session id
+time_t nextSessionStartEpoch = 0;        // Next scheduled start time (Unix epoch)
+bool   ntpTimeReady = false;             // True once NTP time looks valid
 unsigned long sessionStartedAt = 0;     // Timestamp when started
 unsigned long sessionEndsAt    = 0;     // Calculated end time
 bool  hasValidParams    = false;        // True if EEPROM has saved params
@@ -193,13 +198,14 @@ unsigned long lastServerPost    = 0;
 unsigned long lastSettingsFetch = 0;
 unsigned long swingStartedAt    = 0;
 unsigned long lastSwingScheduledAt = 0;
-unsigned long lastSwingExecutedAt = 0;  // Track when swing last actually ran (for dashboard)
+unsigned long lastSwingExecutedAt = 0;
 unsigned long lastStatusPrint   = 0;
 unsigned long lastHeartbeatSent = 0;
 unsigned long lastExhaustCycleAt = 0;
 unsigned long exhaustCycleStartedAt = 0;
 bool exhaustCycleActive = false;
-unsigned long lastIdleTestCommand = 0;  // Track when last test command was executed in IDLE mode
+unsigned long lastIdleTestCommand = 0;
+bool bootNeedsServerConfirm = false;
 
 const char* getCurrentModeLabel() {
     if (TEST_MODE) return "TEST_MODE";
@@ -292,6 +298,102 @@ void runBootAllModulesSequence() {
     Serial.println(F("[Boot] Startup module sequence complete"));
 }
 
+void clearSessionState(bool clearEeprom) {
+    sessionMode = MODE_IDLE;
+    sessionId = 0;
+    sessionName[0] = '\0';
+    sessionStartedAt = 0;
+    sessionEndsAt = 0;
+    lastSwingScheduledAt = 0;
+    lastSwingExecutedAt = 0;
+    turningLockdownActive = false;
+    turningLockdownDaysRemaining = -1;
+    heaterManualOverride = false;
+    swingManualOverride = false;
+
+    heaterGroupOn = false;
+    heaterFanOn = false;
+    heater1On = false;
+    heater2On = false;
+    eggswingOn = false;
+    exhaustOn = false;
+    writeHeaterFan(false);
+    writeHeater1(false);
+    writeHeater2(false);
+    writeEggSwing(false);
+    writeExhaust(false);
+    exhaustCycleActive = false;
+
+    if (clearEeprom) {
+        for (int i = 0; i < 50; i++) {
+            EEPROM.write(EEPROM_SESSION_NAME + i, 0);
+        }
+        EEPROM.put(EEPROM_SESSION_ID, 0);
+        EEPROM.write(EEPROM_SESSION_MODE, (uint8_t)MODE_IDLE);
+        EEPROM.commit();
+    }
+
+    bootNeedsServerConfirm = true;
+}
+
+bool systemTimeLooksValid() {
+    time_t now = time(nullptr);
+    return now > 1700000000;
+}
+
+bool syncTimeFromNtp() {
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+    const unsigned long start = millis();
+    while (!systemTimeLooksValid() && millis() - start < 10000UL) {
+        delay(250);
+        yield();
+    }
+
+    ntpTimeReady = systemTimeLooksValid();
+    if (ntpTimeReady) {
+        Serial.println(F("[NTP] Time synchronized"));
+    } else {
+        Serial.println(F("[NTP] Time sync not ready"));
+    }
+    return ntpTimeReady;
+}
+
+void tryStartScheduledSessionOffline() {
+    if (sessionMode != MODE_IDLE) {
+        return;
+    }
+    if (nextSessionId == 0 || nextSessionStartEpoch == 0 || !systemTimeLooksValid()) {
+        return;
+    }
+
+    time_t nowEpoch = time(nullptr);
+    if (nowEpoch < nextSessionStartEpoch) {
+        return;
+    }
+
+    SessionMode prevMode = sessionMode;
+    sessionMode = MODE_RUNNING;
+    sessionId = nextSessionId;
+    strncpy(sessionName, nextSessionName, sizeof(sessionName) - 1);
+    sessionName[sizeof(sessionName) - 1] = '\0';
+    sessionStartedAt = millis();
+    const unsigned long sessionDurationMs = 21UL * 24UL * 3600UL * 1000UL;
+    sessionEndsAt = sessionStartedAt + sessionDurationMs;
+    lastSwingScheduledAt = 0;
+    setHeater(true);
+    bootNeedsServerConfirm = true;
+    Serial.printf("[Session] Offline scheduled start triggered at %ld for #%d %s\n",
+        (long)nowEpoch, sessionId, sessionName);
+
+    if (prevMode != sessionMode) {
+        Serial.println(F("[Mode] Switched to INCUBATING (offline scheduled start)"));
+    }
+}
+
 
 
 // ─────────────────────────────────────────────
@@ -330,6 +432,12 @@ void setup() {
 
     // Load saved parameters from EEPROM
     loadParametersFromEEPROM();
+
+    if (sessionMode != MODE_IDLE) {
+        Serial.println(F("[Boot] Forcing MODE_IDLE until server confirms running"));
+        sessionMode = MODE_IDLE;
+    }
+    bootNeedsServerConfirm = true;
     
     // Check if EEPROM has valid data
     if (EEPROM.read(EEPROM_INIT_FLAG) == 0xFF) {
@@ -344,6 +452,9 @@ void setup() {
 
     // Start WiFi AP (hotspot for laptop)
     startWiFiAP();
+    if (WiFi.status() == WL_CONNECTED) {
+        syncTimeFromNtp();
+    }
 
     // Setup test HTTP server endpoints
     setupTestEndpoints();
@@ -413,6 +524,17 @@ void loop() {
             readTemperature();
             readHumidity();
         }
+
+        if (bootNeedsServerConfirm && WiFi.status() == WL_CONNECTED) {
+            bootNeedsServerConfirm = false;
+            lastSettingsFetch = now;
+            Serial.println(F("[Boot] Confirming session status from server..."));
+            fetchParametersFromServer();
+        }
+
+        if (!ntpTimeReady && WiFi.status() == WL_CONNECTED && now - lastSettingsFetch >= SETTINGS_INTERVAL) {
+            syncTimeFromNtp();
+        }
         
         // Poll for relay test commands (from accounts.php)
         static unsigned long lastIdleRelayPoll = 0;
@@ -434,6 +556,8 @@ void loop() {
             Serial.println(F("[IDLE] Fetching parameters from server..."));
             fetchParametersFromServer();
         }
+
+        tryStartScheduledSessionOffline();
 
         if (now - lastStatusPrint >= STATUS_INTERVAL) {
             lastStatusPrint = now;
@@ -489,9 +613,9 @@ void loop() {
             setHeaterFan(true);
         }
 
-        // Exhaust: cycle for air mixing while heating, continuous when temp exceeds max temp
+        // Exhaust: cycle for air mixing while heating, continuous when temp meets or exceeds max temp
         if (tempOK) {
-            const bool overheat = currentTemp > savedMaxTemp;
+            const bool overheat = currentTemp >= savedMaxTemp;
             const bool isHeating = currentTemp < savedTargetTemp;
             Serial.printf("[Exhaust] Temp=%.1f | Target=%.1f | Heating=%d | Overheat=%d | exhaustOn=%d\n", currentTemp, savedTargetTemp, isHeating, overheat, exhaustOn);
             
@@ -585,6 +709,11 @@ void loop() {
             printPollingStatus("COMPLETED_POLL");
         }
 
+        if (now - lastSettingsFetch >= SETTINGS_INTERVAL) {
+            lastSettingsFetch = now;
+            fetchParametersFromServer();
+        }
+
         if (now - lastHeartbeatSent >= STATUS_INTERVAL) {
             postDeviceHeartbeat();
         }
@@ -643,7 +772,7 @@ void startWiFiAP() {
 void setupTestEndpoints() {
      // Health status endpoint — includes WiFi, IP, relay states, and server info
      testServer.on("/api/health", HTTP_GET, []() {
-        StaticJsonDocument<512> doc;
+        StaticJsonDocument<768> doc;
         doc["device_id"] = INCUBATOR_ID;
         doc["device_ip"] = WiFi.localIP().toString();
         doc["wifi_ssid"] = WIFI_SSID;
@@ -762,6 +891,12 @@ void setupTestEndpoints() {
         } else {
             testServer.send(400, "application/json", "{\"success\":false,\"error\":\"Unknown relay\"}");
         }
+    });
+
+    testServer.on("/api/test/force_idle", HTTP_POST, []() {
+        clearSessionState(true);
+        Serial.println(F("[TEST] Force idle: session cleared and EEPROM reset"));
+        testServer.send(200, "application/json", "{\"success\":true,\"mode\":\"IDLE\"}");
     });
 
     // 404 handler for test server
@@ -1008,6 +1143,9 @@ void postDeviceHeartbeat() {
     postData += "&exhaust=" + String(exhaustOn ? 1 : 0);
     postData += "&wifi_connected=" + String((WiFi.status() == WL_CONNECTED) ? 1 : 0);
     postData += "&last_swing_executed_at=" + String(lastSwingExecutedAt);
+    postData += "&current_mode=" + String(sessionMode == MODE_RUNNING ? "incubating" : (sessionMode == MODE_COMPLETED ? "completed" : "idle"));
+    postData += "&active_session_name=" + String(sessionName);
+    postData += "&session_id=" + String(sessionId);
 
     httpClient.begin(wifiClient, url);
     httpClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -1063,6 +1201,8 @@ void fetchParametersFromServer() {
             int newSessionId = sessionId;
             SessionMode newSessionMode = sessionMode;
             char newSessionName[sizeof(sessionName)] = {0};
+            int newNextSessionId = nextSessionId;
+            char newNextSessionName[sizeof(nextSessionName)] = {0};
             bool settingsChanged = false;
 
             if (doc.containsKey("target_temp")) newTargetTemp = doc["target_temp"];
@@ -1094,13 +1234,30 @@ void fetchParametersFromServer() {
                 newSessionName[sizeof(newSessionName) - 1] = '\0';
             }
             if (doc.containsKey("session_id")) newSessionId = doc["session_id"];
+            if (doc.containsKey("next_session_id")) newNextSessionId = doc["next_session_id"];
+            if (doc.containsKey("next_session_start_epoch") && !doc["next_session_start_epoch"].isNull()) {
+                nextSessionStartEpoch = (time_t)doc["next_session_start_epoch"].as<long>();
+            } else if (doc.containsKey("next_session_start_at") && !doc["next_session_start_at"].isNull()) {
+                nextSessionStartEpoch = 0;
+            }
+            const char* nextSessionNameValue = "";
+            if (doc.containsKey("next_session_name") && !doc["next_session_name"].isNull()) {
+                nextSessionNameValue = doc["next_session_name"];
+            }
+            if (nextSessionNameValue && nextSessionNameValue[0] != '\0') {
+                strncpy(newNextSessionName, nextSessionNameValue, sizeof(newNextSessionName) - 1);
+                newNextSessionName[sizeof(newNextSessionName) - 1] = '\0';
+            }
 
             bool hasSessionStatus = doc.containsKey("session_status");
             const char* sessionStatus = doc["session_status"] | "";
-            Serial.printf("[Server] session_status=%s session_name=%s session_id=%d\n",
+            Serial.printf("[Server] session_status=%s session_name=%s session_id=%d next_session_name=%s next_session_id=%d scheduled_batches=%d\n",
                 hasSessionStatus ? sessionStatus : "(unchanged)",
                 activeSessionName,
-                doc["session_id"] | 0);
+                doc["session_id"] | 0,
+                nextSessionNameValue,
+                doc["next_session_id"] | 0,
+                doc["scheduled_batch_count"] | 0);
             
             if (hasSessionStatus && strcmp(sessionStatus, "scheduled") == 0) {
                 Serial.println(F("[Session] Batch is scheduled (waiting for start time)"));
@@ -1133,6 +1290,9 @@ void fetchParametersFromServer() {
                     newSessionName[0] = '\0';
                     settingsChanged = true;
                 }
+                if (newNextSessionId != 0 || newNextSessionName[0] != '\0') {
+                    // Keep next-session values so idle mode can pre-load the upcoming batch.
+                }
             }
 
             if (fabsf(savedTargetTemp - newTargetTemp) > 0.001f ||
@@ -1147,6 +1307,8 @@ void fetchParametersFromServer() {
                 turningLockdownDaysRemaining != newTurningLockdownDaysRemaining ||
                 sessionId != newSessionId ||
                 strcmp(sessionName, newSessionName) != 0 ||
+                nextSessionId != newNextSessionId ||
+                strcmp(nextSessionName, newNextSessionName) != 0 ||
                 sessionMode != newSessionMode) {
                 settingsChanged = true;
             }
@@ -1166,6 +1328,9 @@ void fetchParametersFromServer() {
             sessionId = newSessionId;
             strncpy(sessionName, newSessionName, sizeof(sessionName) - 1);
             sessionName[sizeof(sessionName) - 1] = '\0';
+            nextSessionId = newNextSessionId;
+            strncpy(nextSessionName, newNextSessionName, sizeof(nextSessionName) - 1);
+            nextSessionName[sizeof(nextSessionName) - 1] = '\0';
 
             // Only run transition actions when the session mode actually changed
             if (sessionMode == MODE_RUNNING && prevSessionMode != MODE_RUNNING) {

@@ -17,7 +17,7 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
   <div class="ghost-panel-header"><span class="ghost-panel-title">🥚 All My Batches</span></div>
   <div class="ghost-panel-body p-0">
     <table class="ghost-table">
-      <thead><tr><th>Batch Name</th><th>Incubator</th><th>Type</th><th>Eggs</th><th>Start</th><th>Hatch Date</th><th>Status</th><th>Status Time</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Batch Name</th><th>Incubator</th><th>Eggs</th><th>Start</th><th>Hatch Date</th><th>Status</th><th>Status Time</th><th>Actions</th></tr></thead>
       <tbody>
       <?php foreach($batches as $b): $days=max(0,round((strtotime($b['expected_hatch_date'])-time())/86400));
         $statusTime = null;
@@ -27,7 +27,6 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
         <tr>
           <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div><?php if($b['notes']): ?><div style="font-size:.72rem;color:var(--ghost-muted);"><?= substr(htmlspecialchars($b['notes']),0,40) ?>...</div><?php endif; ?></td>
           <td style="font-size:.85rem;"><?= htmlspecialchars($b['incubator_name']) ?></td>
-          <td style="font-size:.82rem;color:var(--ghost-muted);"><?= $b['egg_type'] ?></td>
           <td style="font-weight:600;"><?= $b['egg_count'] ?></td>
           <td style="font-size:.82rem;color:var(--ghost-muted);"><?= date('M j, Y',strtotime($b['start_date'])) ?></td>
           <td><div style="font-size:.85rem;"><?= date('M j, Y',strtotime($b['expected_hatch_date'])) ?></div><div style="font-size:.72rem;color:<?= $days<=3&&$b['status']=='incubating'?'#f87171':'var(--ghost-muted)' ?>;"><?= $b['status']=='incubating'?($days>0?$days.' days left':'Hatch day!'):'' ?></div></td>
@@ -37,8 +36,9 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
           </td>
           <td><div class="d-flex gap-2">
             <button class="btn-edit-ghost" onclick="viewBatchSummary(<?= $b['id'] ?>)"><i class="fas fa-eye"></i></button>
-            <button class="btn-edit-ghost" onclick="editBatch(<?= htmlspecialchars(json_encode($b)) ?>)"><i class="fas fa-pen"></i></button>
-            <button class="btn-danger-ghost" onclick="deleteBatch(<?= $b['id'] ?>)"><i class="fas fa-trash"></i></button>
+            <?php if ($b['status'] === 'scheduled'): ?>
+              <button class="btn-danger-ghost" onclick="cancelBatch(<?= $b['id'] ?>)"><i class="fas fa-ban"></i></button>
+            <?php endif; ?>
           </div></td>
         </tr>
       <?php endforeach; ?>
@@ -95,7 +95,6 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
         <div class="row g-3">
           <div class="col-12"><label class="form-label-ghost">Batch Name</label><input type="text" class="form-control-ghost" id="ab_name" placeholder="e.g. Batch Alpha-03"></div>
           <div class="col-md-6"><label class="form-label-ghost">Incubator</label><select class="form-select-ghost" id="ab_incubator"><option value="">Select Incubator</option><?php foreach($incubators as $i): ?><option value="<?= $i['id'] ?>"><?= htmlspecialchars($i['name']) ?></option><?php endforeach; ?></select></div>
-          <div class="col-md-6"><label class="form-label-ghost">Egg Type</label><select class="form-select-ghost" id="ab_type"><option>Chicken</option><option>Duck</option><option>Quail</option><option>Turkey</option><option>Goose</option><option>Other</option></select></div>
           <div class="col-md-4"><label class="form-label-ghost">Egg Count</label><input type="number" class="form-control-ghost" id="ab_count" placeholder="e.g. 50"></div>
           <div class="col-md-4"><label class="form-label-ghost">Start Date</label><input type="date" class="form-control-ghost" id="ab_start" value="<?= date('Y-m-d') ?>"></div>
           <div class="col-md-4"><label class="form-label-ghost">Expected Hatch</label><input type="date" class="form-control-ghost" id="ab_hatch" value="<?= date('Y-m-d',strtotime('+21 days')) ?>"></div>
@@ -116,7 +115,6 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
         <input type="hidden" id="eb_id">
         <div class="row g-3">
           <div class="col-12"><label class="form-label-ghost">Batch Name</label><input type="text" class="form-control-ghost" id="eb_name"></div>
-          <div class="col-md-6"><label class="form-label-ghost">Egg Type</label><select class="form-select-ghost" id="eb_type"><option>Chicken</option><option>Duck</option><option>Quail</option><option>Turkey</option><option>Goose</option><option>Other</option></select></div>
           <div class="col-md-6"><label class="form-label-ghost">Egg Count</label><input type="number" class="form-control-ghost" id="eb_count"></div>
           <div class="col-md-6"><label class="form-label-ghost">Expected Hatch</label><input type="date" class="form-control-ghost" id="eb_hatch"></div>
           <div class="col-md-6"><label class="form-label-ghost">Status</label><select class="form-select-ghost" id="eb_status"><option value="incubating">Incubating</option><option value="completed">Completed</option><option value="terminated">Terminated</option><option value="hatched">Hatched</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
@@ -131,20 +129,20 @@ $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'"
 <script>
 function addBatch(){
   showLoader('Starting Batch…');
-  $.ajax({url:'../ajax/user_batches.php',method:'POST',data:{action:'add',name:$('#ab_name').val(),incubator_id:$('#ab_incubator').val(),egg_type:$('#ab_type').val(),egg_count:$('#ab_count').val(),start_date:$('#ab_start').val(),hatch_date:$('#ab_hatch').val(),notes:$('#ab_notes').val()},dataType:'json',
+  $.ajax({url:'../ajax/user_batches.php',method:'POST',data:{action:'add',name:$('#ab_name').val(),incubator_id:$('#ab_incubator').val(),egg_count:$('#ab_count').val(),start_date:$('#ab_start').val(),hatch_date:$('#ab_hatch').val(),notes:$('#ab_notes').val()},dataType:'json',
     success:r=>{hideLoader();if(r.success){showToast('Batch started!');setTimeout(()=>location.reload(),700);}else showToast(r.message,'error');},
     error:()=>{hideLoader();showToast('Server error.','error');}
   });
 }
 function editBatch(b){
-  $('#eb_id').val(b.id);$('#eb_name').val(b.batch_name);$('#eb_type').val(b.egg_type);
+  $('#eb_id').val(b.id);$('#eb_name').val(b.batch_name);
   $('#eb_count').val(b.egg_count);$('#eb_hatch').val(b.expected_hatch_date);
   $('#eb_status').val(b.status);$('#eb_notes').val(b.notes||'');
   new bootstrap.Modal(document.getElementById('editBatchModal')).show();
 }
 function updateBatch(){
   showLoader('Updating Batch…');
-  $.ajax({url:'../ajax/user_batches.php',method:'POST',data:{action:'update',id:$('#eb_id').val(),name:$('#eb_name').val(),egg_type:$('#eb_type').val(),egg_count:$('#eb_count').val(),hatch_date:$('#eb_hatch').val(),status:$('#eb_status').val(),notes:$('#eb_notes').val()},dataType:'json',
+  $.ajax({url:'../ajax/user_batches.php',method:'POST',data:{action:'update',id:$('#eb_id').val(),name:$('#eb_name').val(),egg_count:$('#eb_count').val(),hatch_date:$('#eb_hatch').val(),status:$('#eb_status').val(),notes:$('#eb_notes').val()},dataType:'json',
     success:r=>{hideLoader();if(r.success){showToast('Batch updated!');setTimeout(()=>location.reload(),700);}else showToast(r.message,'error');},
     error:()=>{hideLoader();showToast('Server error.','error');}
   });
@@ -153,6 +151,21 @@ function deleteBatch(id){
   showConfirm('Delete batch', 'Delete this batch?', function(){
     showLoader('Deleting…');
     $.post('../ajax/user_batches.php',{action:'delete',id},r=>{hideLoader();if(r.success){showToast('Deleted');setTimeout(()=>location.reload(),600);}else showToast(r.message,'error');},'json');
+  });
+}
+
+function cancelBatch(id){
+  showConfirm('Cancel batch', 'Mark this batch as cancelled? This will not delete the record.', function(){
+    showLoader('Cancelling…');
+    $.post('../ajax/user_batches.php',{action:'update',id:id,status:'cancelled'},function(r){
+      hideLoader();
+      if(r && r.success){
+        showToast('Batch cancelled');
+        setTimeout(()=>location.reload(),600);
+      } else {
+        showToast((r && r.message) ? r.message : 'Could not cancel batch','error');
+      }
+    },'json').fail(function(){ hideLoader(); showToast('Server error.','error'); });
   });
 }
 
@@ -263,7 +276,7 @@ function viewBatchSummary(batchId){
     }
 
     $('#bs_name').text(res.batch.batch_name || '—');
-    $('#bs_meta').text(`${res.batch.incubator_name || '—'} · ${res.batch.egg_type || '—'} · ${res.batch.egg_count || 0} eggs · ${res.batch.status || '—'}`);
+    $('#bs_meta').text(`${res.batch.incubator_name || '—'} · ${res.batch.egg_count || 0} eggs · ${res.batch.status || '—'}`);
     $('#bs_duration').text(formatDuration(res.session.duration_seconds));
     $('#bs_window').text(`${formatBatchDateTime(res.session.start_at)} → ${formatBatchDateTime(res.session.end_at)}`);
     $('#bs_temp').text(res.session.temperature.avg !== null ? `${res.session.temperature.avg.toFixed(2)}°C` : '—');

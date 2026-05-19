@@ -107,72 +107,7 @@ $tempLogs = array_reverse($pdo->query(
     </div>
 </div>
 
-<div class="ghost-panel mb-4" id="sessionParamsCard">
-    <div class="ghost-panel-header d-flex justify-content-between align-items-center">
-        <span class="ghost-panel-title">🧪 Current Session Parameters</span>
-        <button id="btnStopTop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled>Stop Session</button>
-    </div>
-    <div class="ghost-panel-body">
-        <div class="monitor-grid" style="padding: 6px 0;">
-            <div class="monitor-item">
-                <div class="monitor-label">Start Time</div>
-                <div class="monitor-value" id="paramStartTime">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">End Time</div>
-                <div class="monitor-value" id="paramEndTime">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Egg Type</div>
-                <div class="monitor-value" id="paramEggType">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Egg Count</div>
-                <div class="monitor-value" id="paramEggCount">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Target Temp</div>
-                <div class="monitor-value" id="paramTargetTemp">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Min Temp</div>
-                <div class="monitor-value" id="paramMinTemp">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Max Temp</div>
-                <div class="monitor-value" id="paramMaxTemp">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Target Humidity</div>
-                <div class="monitor-value" id="paramTargetHum">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Min Humidity</div>
-                <div class="monitor-value" id="paramMinHum">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Max Humidity</div>
-                <div class="monitor-value" id="paramMaxHum">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Turn Interval</div>
-                <div class="monitor-value" id="paramTurnInterval">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Swing Duration</div>
-                <div class="monitor-value" id="paramSwingDuration">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Next Swing In</div>
-                <div class="monitor-value" id="paramNextSwing">—</div>
-            </div>
-            <div class="monitor-item">
-                <div class="monitor-label">Last Swing</div>
-                <div class="monitor-value" id="paramLastSwing">—</div>
-            </div>
-        </div>
-    </div>
-</div>
+
 
 <!-- ══════════════════════════════════════════════════════════
      MONITORING
@@ -453,7 +388,7 @@ $tempLogs = array_reverse($pdo->query(
                         <div class="monitor-value" id="monitorSessionStatus">—</div>
                     </div>
                     <div class="monitor-item">
-                        <div class="monitor-label">Session Params ID</div>
+                        <div class="monitor-label">Session</div>
                         <div class="monitor-value" id="monitorParamsId">—</div>
                     </div>
                     <div class="monitor-item">
@@ -467,16 +402,80 @@ $tempLogs = array_reverse($pdo->query(
         </div>
     </div>
 </div>
-
-<!-- ── CHART + SCHEDULE ─────────────────────────────────────── -->
-<div class="row g-3 mb-4">
-    <div class="col-lg-8">
-        <div class="ghost-panel">
-            <div class="ghost-panel-header"><span class="ghost-panel-title">🌡️ Temperature Trend</span></div>
-            <div class="ghost-panel-body"><canvas id="tempChart" height="130"></canvas></div>
+<div class="row g-3 mb-4" id="sessionOverviewRow" style="display:none;">
+    <div class="col-lg-6">
+        <div class="ghost-panel h-100" id="sessionParamsCard">
+            <div class="ghost-panel-header d-flex justify-content-between align-items-center">
+                <span class="ghost-panel-title">🧪 Current Session Parameters</span>
+                <button id="btnStopTop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled>Stop Session</button>
+            </div>
+            <div class="ghost-panel-body">
+                <div class="monitor-grid" style="padding: 6px 0;">
+                    <div class="monitor-item">
+                        <div class="monitor-label">Start Time</div>
+                        <div class="monitor-value" id="paramStartTime">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">End Time</div>
+                        <div class="monitor-value" id="paramEndTime">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Egg Count</div>
+                        <div class="monitor-value" id="paramEggCount">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Target Temp</div>
+                        <div class="monitor-value" id="paramTargetTemp">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Min Temp</div>
+                        <div class="monitor-value" id="paramMinTemp">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Max Temp</div>
+                        <div class="monitor-value" id="paramMaxTemp">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Target Humidity</div>
+                        <div class="monitor-value" id="paramTargetHum">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Min Humidity</div>
+                        <div class="monitor-value" id="paramMinHum">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Max Humidity</div>
+                        <div class="monitor-value" id="paramMaxHum">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Turn Interval</div>
+                        <div class="monitor-value" id="paramTurnInterval">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Swing Duration</div>
+                        <div class="monitor-value" id="paramSwingDuration">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Next Swing In</div>
+                        <div class="monitor-value" id="paramNextSwing">—</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
-    <div class="col-lg-4">
+    <div class="col-lg-6">
+        <div class="ghost-panel h-100" id="sessionTempChartCard">
+            <div class="ghost-panel-header"><span class="ghost-panel-title">🌡️ Temperature Trend</span></div>
+            <div class="ghost-panel-body">
+                <div class="chart-wrap"><canvas id="tempChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── UPCOMING TASKS ─────────────────────────────────────── -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
         <div class="ghost-panel h-100">
             <div class="ghost-panel-header"><span class="ghost-panel-title">📅 Upcoming Tasks</span></div>
             <div class="ghost-panel-body p-0">
@@ -532,7 +531,6 @@ $tempLogs = array_reverse($pdo->query(
                 <tr>
                     <td>
                         <div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div>
-                        <div style="font-size:.75rem;color:var(--ghost-muted);"><?= $b['egg_type'] ?></div>
                     </td>
                     <td style="font-size:.85rem;color:var(--ghost-muted);"><?= htmlspecialchars($b['incubator_name']) ?>
                     </td>
@@ -625,8 +623,8 @@ $tempLogs = array_reverse($pdo->query(
                                         id="inc_duration_seconds" value="0" style="text-align:center;">
                                 </div>
                             </div>
-                            <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Use this instead of
-                                egg type presets. Example: 21 days 00:00:00 for chicken.</div>
+                            <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Example: 21 days
+                                00:00:00.</div>
                         </div>
 
                         <div class="row g-3">
@@ -771,6 +769,7 @@ let liveSessionState = {
     endsAt: null,
     status: 'idle',
     currentMode: 'idle',
+    activeBatchId: null,
     activeSessionName: null,
     incubationDay: null,
     runningOps: 'idle',
@@ -779,18 +778,51 @@ let liveSessionState = {
     lastServerSync: null
 };
 
+function computePaddedBounds(values, padRatio, minPad, clampMin, clampMax) {
+    const nums = (values || []).map(v => Number(v)).filter(v => Number.isFinite(v));
+    if (!nums.length) return { min: undefined, max: undefined };
+    let min = Math.min(...nums);
+    let max = Math.max(...nums);
+    const range = max - min;
+    const pad = Math.max(range * padRatio, minPad);
+    min -= pad;
+    max += pad;
+    if (Number.isFinite(clampMin)) min = Math.max(min, clampMin);
+    if (Number.isFinite(clampMax)) max = Math.min(max, clampMax);
+    return { min, max };
+}
+
+function applyChartBounds(chart, tempValues, humValues) {
+    if (!chart || !chart.options || !chart.options.scales) return;
+    const tempBounds = computePaddedBounds(tempValues, 0.08, 0.4, 0, null);
+    const humBounds = computePaddedBounds(humValues, 0.08, 2, 0, 100);
+    const y = chart.options.scales.y;
+    const y2 = chart.options.scales.y2;
+    if (y) {
+        y.min = Number.isFinite(tempBounds.min) ? tempBounds.min : undefined;
+        y.max = Number.isFinite(tempBounds.max) ? tempBounds.max : undefined;
+    }
+    if (y2) {
+        y2.min = Number.isFinite(humBounds.min) ? humBounds.min : undefined;
+        y2.max = Number.isFinite(humBounds.max) ? humBounds.max : undefined;
+    }
+}
+
 window.addEventListener('load', function() {
     if (!window.Chart) return;
     Chart.defaults.color = '#64748b';
     Chart.defaults.font.family = 'Space Grotesk';
+    const initialLabels = <?= json_encode(array_column($tempLogs,'lbl')) ?>;
+    const initialTempData = <?= json_encode(array_column($tempLogs,'temperature')) ?>;
+    const initialHumData = <?= json_encode(array_column($tempLogs,'humidity')) ?>;
     tempChartInstance = new Chart(document.getElementById('tempChart'), {
         type: 'line',
         data: {
-            labels: <?= json_encode(array_column($tempLogs,'lbl')) ?>,
+            labels: initialLabels,
             datasets: [{
                     label: 'Temperature (°C)',
                     yAxisID: 'y',
-                    data: <?= json_encode(array_column($tempLogs,'temperature')) ?>,
+                    data: initialTempData,
                     borderColor: '#f5a623',
                     backgroundColor: 'rgba(245,166,35,.08)',
                     tension: .4,
@@ -802,7 +834,7 @@ window.addEventListener('load', function() {
                 {
                     label: 'Humidity (%)',
                     yAxisID: 'y2',
-                    data: <?= json_encode(array_column($tempLogs,'humidity')) ?>,
+                    data: initialHumData,
                     borderColor: '#3b82f6',
                     backgroundColor: 'rgba(59,130,246,.06)',
                     tension: .4,
@@ -815,6 +847,15 @@ window.addEventListener('load', function() {
         },
         options: {
             responsive: true,
+            maintainAspectRatio: false,
+            layout: {
+                padding: {
+                    left: 8,
+                    right: 12,
+                    top: 8,
+                    bottom: 6
+                }
+            },
             interaction: {
                 mode: 'index',
                 intersect: false
@@ -845,8 +886,6 @@ window.addEventListener('load', function() {
                     grid: {
                         color: 'rgba(255,255,255,.04)'
                     },
-                    min: 36,
-                    max: 39,
                     ticks: {
                         font: {
                             size: 10
@@ -859,8 +898,6 @@ window.addEventListener('load', function() {
                     grid: {
                         display: false
                     },
-                    min: 45,
-                    max: 70,
                     ticks: {
                         font: {
                             size: 10
@@ -871,6 +908,7 @@ window.addEventListener('load', function() {
             }
         }
     });
+    applyChartBounds(tempChartInstance, initialTempData, initialHumData);
 
     // Start auto-refresh of temperature chart every 30 seconds
     setInterval(refreshTemperatureChart, 30000);
@@ -887,9 +925,12 @@ function refreshTemperatureChart() {
         limit: 10
     }, function(data) {
         if (data && data.length > 0) {
+            const temps = data.map(d => d.temperature);
+            const hums = data.map(d => d.humidity);
             tempChartInstance.data.labels = data.map(d => d.lbl);
-            tempChartInstance.data.datasets[0].data = data.map(d => d.temperature);
-            tempChartInstance.data.datasets[1].data = data.map(d => d.humidity);
+            tempChartInstance.data.datasets[0].data = temps;
+            tempChartInstance.data.datasets[1].data = hums;
+            applyChartBounds(tempChartInstance, temps, hums);
             tempChartInstance.update();
         }
     }, 'json');
@@ -1331,12 +1372,16 @@ function parseServerDate(value) {
     if (!value) return null;
     const raw = String(value).trim();
     if (!raw) return null;
+    if (raw.startsWith('0000-00-00')) return null;
 
     const normalized = raw
         .replace(' ', 'T')
         .replace(/\.\d+$/, '');
     const parsed = new Date(normalized);
-    if (!isNaN(parsed.getTime())) return parsed;
+    if (!isNaN(parsed.getTime())) {
+        if (parsed.getFullYear() < 2000) return null;
+        return parsed;
+    }
 
     const dmy = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
     if (!dmy) return null;
@@ -1348,7 +1393,9 @@ function parseServerDate(value) {
     const minute = parseInt(dmy[5] || '0', 10);
     const second = parseInt(dmy[6] || '0', 10);
     const fallback = new Date(year, month, day, hour, minute, second);
-    return isNaN(fallback.getTime()) ? null : fallback;
+    if (isNaN(fallback.getTime())) return null;
+    if (fallback.getFullYear() < 2000) return null;
+    return fallback;
 }
 
 function formatReadableDate(value) {
@@ -1454,7 +1501,6 @@ function fetchLiveStatus() {
         // Session parameter card values (show even if offline)
         setText('paramStartTime', res.session_started_at ? formatReadableDate(res.session_started_at) : '—');
         setText('paramEndTime', res.session_ends_at ? formatReadableDate(res.session_ends_at) : '—');
-        setText('paramEggType', res.egg_type || '—');
         setText('paramEggCount', (res.egg_count || res.egg_count === 0) ? String(res.egg_count) : '—');
         setText('paramTargetTemp', res.target_temp ? `${parseFloat(res.target_temp).toFixed(2)}°C` : '—');
         setText('paramMinTemp', res.min_temp ? `${parseFloat(res.min_temp).toFixed(2)}°C` : '—');
@@ -1473,7 +1519,6 @@ function fetchLiveStatus() {
         const intervalHours = parseFloat(res.turning_interval);
         if (lastTurn && !isNaN(lastTurn.getTime())) {
             const secondsAgo = Math.max(0, Math.floor((Date.now() - lastTurn.getTime()) / 1000));
-            setText('paramLastSwing', formatRelativeSeconds(secondsAgo));
             if (intervalHours > 0) {
                 const intervalMs = intervalHours * 3600 * 1000;
                 const elapsed = Date.now() - lastTurn.getTime();
@@ -1490,10 +1535,8 @@ function fetchLiveStatus() {
             const steps = Math.max(1, Math.ceil(elapsed / intervalMs));
             const nextMs = startedAt.getTime() + steps * intervalMs;
             const nextSeconds = Math.max(0, Math.floor((nextMs - Date.now()) / 1000));
-            setText('paramLastSwing', 'Not yet');
             setText('paramNextSwing', formatCountdownShort(nextSeconds));
         } else {
-            setText('paramLastSwing', '—');
             setText('paramNextSwing', '—');
         }
 
@@ -1535,7 +1578,14 @@ function fetchLiveStatus() {
                 .toUpperCase();
             const onlineLabel = res.online ? 'ONLINE' : 'OFFLINE';
             setText('monitorSessionStatus', `${onlineLabel} | ${modeLabel}`);
-            setText('monitorParamsId', res.temp_settings_id ? `#${res.temp_settings_id}` : '—');
+            // Prefer session number (how many batches/sessions have been created) for user-friendly label
+            if (res.active_batch_id) {
+                setText('monitorParamsId', `Batch #${res.active_batch_id}`);
+            } else if (res.session_number) {
+                setText('monitorParamsId', `Session #${res.session_number}`);
+            } else {
+                setText('monitorParamsId', res.temp_settings_id ? `#${res.temp_settings_id}` : '—');
+            }
             setText('paramSwingDuration', res.swing_duration_sec ? `${res.swing_duration_sec}s` : '—');
 
             if (res.session_ends_at && res.session_status === 'running') {
@@ -1581,6 +1631,7 @@ function fetchLiveStatus() {
         liveSessionState.endsAt = res.session_ends_at || null;
         liveSessionState.status = res.session_status || 'idle';
         liveSessionState.currentMode = res.current_mode || 'idle';
+        liveSessionState.activeBatchId = res.active_batch_id || null;
         liveSessionState.activeSessionName = res.active_session_name || null;
         liveSessionState.incubationDay = res.incubation_day || null;
         liveSessionState.runningOps = res.running_ops || 'idle';
@@ -1870,15 +1921,8 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
 
         cleanup();
         modal.hide();
-        // Start immediately - set datetime to now
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        const day = String(now.getDate()).padStart(2, '0');
-        const hour = String(now.getHours()).padStart(2, '0');
-        const minute = String(now.getMinutes()).padStart(2, '0');
-        const scheduledDateTime = `${year}-${month}-${day} ${hour}:${minute}`;
-        if (typeof onConfirm === 'function') onConfirm(eggCount, scheduledDateTime);
+        // Start immediately by omitting the scheduled datetime.
+        if (typeof onConfirm === 'function') onConfirm(eggCount, '');
     }
 
     startNowBtn.addEventListener('click', startNowHandler);
@@ -1939,11 +1983,11 @@ function updateControlButtons() {
     const btnStop = document.getElementById('btnStop');
     const btnSetParams = document.getElementById('btnSetParams');
     const btnStopTop = document.getElementById('btnStopTop');
+    const sessionOverviewRow = document.getElementById('sessionOverviewRow');
     const sessionParamsCard = document.getElementById('sessionParamsCard');
+    const sessionTempChartCard = document.getElementById('sessionTempChartCard');
 
     if (btnStart) {
-        // Enable Start button if no session is currently running
-        // (device may be offline but we still allow trying to start)
         btnStart.disabled = isSessionRunning;
     }
     if (btnStop) {
@@ -1955,28 +1999,37 @@ function updateControlButtons() {
     if (btnStopTop) {
         btnStopTop.disabled = !isSessionRunning;
     }
+    if (sessionOverviewRow) {
+        sessionOverviewRow.style.display = isSessionRunning ? 'flex' : 'none';
+    }
     if (sessionParamsCard) {
         sessionParamsCard.style.display = isSessionRunning ? 'block' : 'none';
+    }
+    if (sessionTempChartCard) {
+        sessionTempChartCard.style.display = isSessionRunning ? 'block' : 'none';
+    }
+    if (isSessionRunning && tempChartInstance) {
+        setTimeout(() => tempChartInstance.resize(), 0);
     }
 
     // Old session modal buttons (if they exist)
     const startBtn = document.getElementById('btnStartSession');
-    const stopBtn = document.getElementById('btnStopSession');
-    const setBtn = document.getElementById('btnSetParams');
-    const label = document.getElementById('sessionLabel');
-    if (status === 'running') {
-        if (startBtn) startBtn.style.display = 'none';
-        if (stopBtn) stopBtn.style.display = 'inline-block';
-        if (label) label.textContent = 'Session: Running';
-        startPulse();
-        if (setBtn) setBtn.style.display = 'none';
-    } else {
-        if (startBtn) startBtn.style.display = 'inline-block';
-        if (stopBtn) stopBtn.style.display = 'none';
-        if (label) label.textContent = 'Session: Idle';
-        stopPulse();
-        if (setBtn) setBtn.style.display = 'inline-block';
-    }
+const stopBtn = document.getElementById('btnStopSession');
+const setBtn = document.getElementById('btnSetParams');
+const label = document.getElementById('sessionLabel');
+if (status === 'running') {
+    if (startBtn) startBtn.style.display = 'none';
+    if (stopBtn) stopBtn.style.display = 'inline-block';
+    if (label) label.textContent = 'Session: Running';
+    startPulse();
+    if (setBtn) setBtn.style.display = 'none';
+} else {
+    if (startBtn) startBtn.style.display = 'inline-block';
+    if (stopBtn) stopBtn.style.display = 'none';
+    if (label) label.textContent = 'Session: Idle';
+    stopPulse();
+    if (setBtn) setBtn.style.display = 'inline-block';
+}
 }
 
 function startSessionQuick() {
@@ -2106,7 +2159,7 @@ function startSessionQuick() {
             duration_hours: durationHours,
             duration_minutes: durationMinutes,
             duration_seconds: durationSeconds,
-            scheduled_start_datetime: '',
+            scheduled_start_datetime: scheduledDateTime || '',
             token: 'ghost_hw_secret_2024'
         }, function(res) {
             console.log('[startNow] API response:', res);
@@ -2114,10 +2167,12 @@ function startSessionQuick() {
                 showFb('❌ Could not start session: ' + (res.message || ''), 'danger');
                 return;
             }
-            showFb('✅ Session started.', 'success');
-            setTimeout(function() {
-                fetchLiveStatus();
-            }, 700);
+            sendCmd('heater_on', function() {
+                showFb('✅ Session started. Heaters turning on.', 'success');
+                setTimeout(function() {
+                    fetchLiveStatus();
+                }, 700);
+            });
         }, 'json').fail(function(xhr, textStatus, errorThrown) {
             console.error('[startNow] API call failed:', {
                 textStatus,

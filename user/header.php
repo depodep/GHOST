@@ -106,6 +106,8 @@ body.sidebar-collapsed #sidebar .sidebar-inner{opacity:0;pointer-events:none;tra
 .ghost-panel-header{padding:18px 22px;border-bottom:1px solid var(--ghost-border);display:flex;align-items:center;gap:12px;}
 .ghost-panel-title{font-weight:700;font-size:0.95rem;color:white;flex:1;}
 .ghost-panel-body{padding:22px;}
+.chart-wrap{position:relative;width:100%;height:220px;}
+#sessionTempChartCard canvas{display:block;width:100%!important;height:100%!important;}
 
 /* TABLE */
 .ghost-table{width:100%;border-collapse:collapse;}

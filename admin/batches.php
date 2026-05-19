@@ -23,7 +23,7 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
         if ($b['status'] === 'terminated') { $statusTime = $b['terminated_at'] ?? null; }
       ?>
         <tr>
-          <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div><div style="font-size:.72rem;color:var(--ghost-muted);"><?= $b['egg_type'] ?></div></td>
+          <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div></td>
           <td style="font-size:.85rem;color:var(--ghost-muted);"><?= htmlspecialchars($b['user_name']) ?></td>
           <td style="font-size:.85rem;"><?= htmlspecialchars($b['incubator_name']) ?></td>
           <td style="font-weight:600;"><?= $b['egg_count'] ?></td>
@@ -34,8 +34,9 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
             <?= $statusTime ? date('M j, Y H:i', strtotime($statusTime)) : '—' ?>
           </td>
           <td><div class="d-flex gap-2">
-            <button class="btn-edit-ghost" onclick="editBatch(<?= htmlspecialchars(json_encode($b)) ?>)"><i class="fas fa-pen"></i></button>
-            <button class="btn-danger-ghost" onclick="deleteBatch(<?= $b['id'] ?>)"><i class="fas fa-trash"></i></button>
+            <?php if ($b['status'] === 'scheduled'): ?>
+              <button class="btn-danger-ghost" onclick="cancelBatch2(<?= $b['id'] ?>)"><i class="fas fa-ban"></i></button>
+            <?php endif; ?>
           </div></td>
         </tr>
       <?php endforeach; ?>
@@ -53,7 +54,6 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
         <div class="col-12"><label class="form-label-ghost">Batch Name</label><input type="text" class="form-control-ghost" id="ab2_name" placeholder="e.g. Batch Delta-01"></div>
         <div class="col-md-6"><label class="form-label-ghost">Assign to User</label><select class="form-select-ghost" id="ab2_user"><?php foreach($users as $u): ?><option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['full_name']) ?></option><?php endforeach; ?></select></div>
         <div class="col-md-6"><label class="form-label-ghost">Incubator</label><select class="form-select-ghost" id="ab2_incubator"><?php foreach($incubators as $i): ?><option value="<?= $i['id'] ?>"><?= htmlspecialchars($i['name']) ?></option><?php endforeach; ?></select></div>
-        <div class="col-md-4"><label class="form-label-ghost">Egg Type</label><select class="form-select-ghost" id="ab2_type"><option>Chicken</option><option>Duck</option><option>Quail</option><option>Turkey</option><option>Goose</option></select></div>
         <div class="col-md-4"><label class="form-label-ghost">Egg Count</label><input type="number" class="form-control-ghost" id="ab2_count" placeholder="50"></div>
         <div class="col-md-4"><label class="form-label-ghost">Start Date</label><input type="date" class="form-control-ghost" id="ab2_start" value="<?= date('Y-m-d') ?>"></div>
         <div class="col-md-6"><label class="form-label-ghost">Hatch Date</label><input type="date" class="form-control-ghost" id="ab2_hatch" value="<?= date('Y-m-d',strtotime('+21 days')) ?>"></div>
@@ -85,7 +85,7 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
 <script>
 function addBatch2(){
   showLoader('Adding Batch…');
-  $.ajax({url:'../ajax/admin_batches.php',method:'POST',data:{action:'add',name:$('#ab2_name').val(),user_id:$('#ab2_user').val(),incubator_id:$('#ab2_incubator').val(),egg_type:$('#ab2_type').val(),egg_count:$('#ab2_count').val(),start_date:$('#ab2_start').val(),hatch_date:$('#ab2_hatch').val(),notes:$('#ab2_notes').val()},dataType:'json',
+  $.ajax({url:'../ajax/admin_batches.php',method:'POST',data:{action:'add',name:$('#ab2_name').val(),user_id:$('#ab2_user').val(),incubator_id:$('#ab2_incubator').val(),egg_count:$('#ab2_count').val(),start_date:$('#ab2_start').val(),hatch_date:$('#ab2_hatch').val(),notes:$('#ab2_notes').val()},dataType:'json',
     success:r=>{hideLoader();if(r.success){showToast('Batch added!');setTimeout(()=>location.reload(),700);}else showToast(r.message,'error');},
     error:()=>{hideLoader();showToast('Server error.','error');}
   });
@@ -98,10 +98,18 @@ function updateBatch2(){
     error:()=>{hideLoader();showToast('Server error.','error');}
   });
 }
-function deleteBatch(id){
-  showConfirm('Delete batch', 'Delete this batch?', function(){
-    showLoader('Deleting…');
-    $.post('../ajax/admin_batches.php',{action:'delete',id},r=>{hideLoader();if(r.success){showToast('Deleted');setTimeout(()=>location.reload(),600);}else showToast(r.message,'error');},'json');
+function cancelBatch2(id){
+  showConfirm('Cancel batch', 'Mark this batch as cancelled? This will not delete the record.', function(){
+    showLoader('Cancelling…');
+    $.post('../ajax/admin_batches.php',{action:'update',id:id,status:'cancelled'},function(r){
+      hideLoader();
+      if(r && r.success){
+        showToast('Batch cancelled');
+        setTimeout(()=>location.reload(),600);
+      } else {
+        showToast((r && r.message) ? r.message : 'Could not cancel batch','error');
+      }
+    },'json').fail(function(){ hideLoader(); showToast('Server error.','error'); });
   });
 }
 </script>

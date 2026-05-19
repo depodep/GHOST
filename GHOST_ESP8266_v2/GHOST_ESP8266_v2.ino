@@ -27,6 +27,7 @@
 #include <EEPROM.h>
 #include <DHT.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // ─────────────────────────────────────────────
 //  ★  USER CONFIGURATION — EDIT THESE  ★
@@ -153,6 +154,10 @@ SessionMode sessionMode = MODE_IDLE;
 // Session info
 char  sessionName[50]   = "";           // Batch/session name
 int   sessionId         = 0;            // From server
+char  nextSessionName[50] = "";         // Next scheduled batch/session name
+int   nextSessionId       = 0;           // Next scheduled batch/session id
+time_t nextSessionStartEpoch = 0;        // Next scheduled start time (Unix epoch)
+bool   ntpTimeReady = false;             // True once NTP time looks valid
 unsigned long sessionStartedAt = 0;     // Timestamp when started
 unsigned long sessionEndsAt    = 0;     // Calculated end time
 bool  hasValidParams    = false;        // True if EEPROM has saved params
@@ -292,6 +297,59 @@ void runBootAllModulesSequence() {
     Serial.println(F("[Boot] Startup module sequence complete"));
 }
 
+bool systemTimeLooksValid() {
+    time_t now = time(nullptr);
+    return now > 1700000000;
+}
+
+bool syncTimeFromNtp() {
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+    const unsigned long start = millis();
+    while (!systemTimeLooksValid() && millis() - start < 10000UL) {
+        delay(250);
+        yield();
+    }
+
+    ntpTimeReady = systemTimeLooksValid();
+    if (ntpTimeReady) {
+        Serial.println(F("[NTP] Time synchronized"));
+    } else {
+        Serial.println(F("[NTP] Time sync not ready"));
+    }
+    return ntpTimeReady;
+}
+
+void tryStartScheduledSessionOffline() {
+    if (sessionMode != MODE_IDLE) {
+        return;
+    }
+    if (nextSessionId == 0 || nextSessionStartEpoch == 0 || !systemTimeLooksValid()) {
+        return;
+    }
+
+    time_t nowEpoch = time(nullptr);
+    if (nowEpoch < nextSessionStartEpoch) {
+        return;
+    }
+
+    sessionMode = MODE_RUNNING;
+    sessionId = nextSessionId;
+    strncpy(sessionName, nextSessionName, sizeof(sessionName) - 1);
+    sessionName[sizeof(sessionName) - 1] = '\0';
+    sessionStartedAt = millis();
+    sessionEndsAt = sessionStartedAt + 21UL * 24UL * 3600UL * 1000UL;
+    lastSwingScheduledAt = 0;
+    setHeater(true);
+    bootNeedsServerConfirm = true;
+    Serial.printf("[Session] Offline scheduled start triggered at %ld for #%d %s\n",
+        (long)nowEpoch, sessionId, sessionName);
+    Serial.println(F("[Mode] Switched to INCUBATING (offline scheduled start)"));
+}
+
 
 
 // ─────────────────────────────────────────────
@@ -344,6 +402,9 @@ void setup() {
 
     // Start WiFi AP (hotspot for laptop)
     startWiFiAP();
+    if (WiFi.status() == WL_CONNECTED) {
+        syncTimeFromNtp();
+    }
 
     // Setup test HTTP server endpoints
     setupTestEndpoints();
@@ -433,6 +494,12 @@ void loop() {
             Serial.println(F("[IDLE] Fetching parameters from server..."));
             fetchParametersFromServer();
         }
+
+        if (!ntpTimeReady && WiFi.status() == WL_CONNECTED) {
+            syncTimeFromNtp();
+        }
+
+        tryStartScheduledSessionOffline();
 
         if (now - lastStatusPrint >= STATUS_INTERVAL) {
             lastStatusPrint = now;
@@ -643,7 +710,7 @@ void startWiFiAP() {
 void setupTestEndpoints() {
      // Health status endpoint — includes WiFi, IP, relay states, and server info
      testServer.on("/api/health", HTTP_GET, []() {
-        StaticJsonDocument<512> doc;
+        StaticJsonDocument<768> doc;
         doc["device_id"] = INCUBATOR_ID;
         doc["device_ip"] = WiFi.localIP().toString();
         doc["wifi_ssid"] = WIFI_SSID;
@@ -943,6 +1010,9 @@ void postDeviceHeartbeat() {
     postData += "&swing=" + String(eggswingOn ? 1 : 0);
     postData += "&exhaust=" + String(exhaustOn ? 1 : 0);
     postData += "&wifi_connected=" + String((WiFi.status() == WL_CONNECTED) ? 1 : 0);
+    postData += "&current_mode=" + String(sessionMode == MODE_RUNNING ? "incubating" : (sessionMode == MODE_COMPLETED ? "completed" : "idle"));
+    postData += "&active_session_name=" + String(sessionName);
+    postData += "&session_id=" + String(sessionId);
 
     httpClient.begin(wifiClient, url);
     httpClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -998,6 +1068,8 @@ void fetchParametersFromServer() {
             int newSessionId = sessionId;
             SessionMode newSessionMode = sessionMode;
             char newSessionName[sizeof(sessionName)] = {0};
+            int newNextSessionId = nextSessionId;
+            char newNextSessionName[sizeof(nextSessionName)] = {0};
             bool settingsChanged = false;
 
             if (doc.containsKey("target_temp")) newTargetTemp = doc["target_temp"];
@@ -1029,13 +1101,30 @@ void fetchParametersFromServer() {
                 newSessionName[sizeof(newSessionName) - 1] = '\0';
             }
             if (doc.containsKey("session_id")) newSessionId = doc["session_id"];
+            if (doc.containsKey("next_session_id")) newNextSessionId = doc["next_session_id"];
+            if (doc.containsKey("next_session_start_epoch") && !doc["next_session_start_epoch"].isNull()) {
+                nextSessionStartEpoch = (time_t)doc["next_session_start_epoch"].as<long>();
+            } else if (doc.containsKey("next_session_start_at") && !doc["next_session_start_at"].isNull()) {
+                nextSessionStartEpoch = 0;
+            }
+            const char* nextSessionNameValue = "";
+            if (doc.containsKey("next_session_name") && !doc["next_session_name"].isNull()) {
+                nextSessionNameValue = doc["next_session_name"];
+            }
+            if (nextSessionNameValue && nextSessionNameValue[0] != '\0') {
+                strncpy(newNextSessionName, nextSessionNameValue, sizeof(newNextSessionName) - 1);
+                newNextSessionName[sizeof(newNextSessionName) - 1] = '\0';
+            }
 
             bool hasSessionStatus = doc.containsKey("session_status");
             const char* sessionStatus = doc["session_status"] | "";
-            Serial.printf("[Server] session_status=%s session_name=%s session_id=%d\n",
+            Serial.printf("[Server] session_status=%s session_name=%s session_id=%d next_session_name=%s next_session_id=%d scheduled_batches=%d\n",
                 hasSessionStatus ? sessionStatus : "(unchanged)",
                 activeSessionName,
-                doc["session_id"] | 0);
+                doc["session_id"] | 0,
+                nextSessionNameValue,
+                doc["next_session_id"] | 0,
+                doc["scheduled_batch_count"] | 0);
 
             if (hasSessionStatus && strcmp(sessionStatus, "running") == 0) {
                 if (newSessionMode != MODE_RUNNING) {
@@ -1057,6 +1146,9 @@ void fetchParametersFromServer() {
                     newSessionName[0] = '\0';
                     settingsChanged = true;
                 }
+                if (newNextSessionId != 0 || newNextSessionName[0] != '\0') {
+                    // Keep next-session values so idle mode can pre-load the upcoming batch.
+                }
             }
 
             if (fabsf(savedTargetTemp - newTargetTemp) > 0.001f ||
@@ -1071,6 +1163,8 @@ void fetchParametersFromServer() {
                 turningLockdownDaysRemaining != newTurningLockdownDaysRemaining ||
                 sessionId != newSessionId ||
                 strcmp(sessionName, newSessionName) != 0 ||
+                nextSessionId != newNextSessionId ||
+                strcmp(nextSessionName, newNextSessionName) != 0 ||
                 sessionMode != newSessionMode) {
                 settingsChanged = true;
             }
@@ -1089,6 +1183,9 @@ void fetchParametersFromServer() {
             sessionId = newSessionId;
             strncpy(sessionName, newSessionName, sizeof(sessionName) - 1);
             sessionName[sizeof(sessionName) - 1] = '\0';
+            nextSessionId = newNextSessionId;
+            strncpy(nextSessionName, newNextSessionName, sizeof(nextSessionName) - 1);
+            nextSessionName[sizeof(nextSessionName) - 1] = '\0';
 
             if (sessionMode == MODE_RUNNING) {
                 sessionStartedAt = sessionStartedAt == 0 ? millis() : sessionStartedAt;

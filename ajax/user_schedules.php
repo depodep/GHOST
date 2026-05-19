@@ -133,6 +133,7 @@ if($action === 'add'){
   $max_humidity = ($_POST['max_humidity'] ?? '') !== '' ? (float)$_POST['max_humidity'] : null;
   $swing_duration_sec = ($_POST['swing_duration_sec'] ?? '') !== '' ? (int)$_POST['swing_duration_sec'] : 30;
   $turning_interval = ($_POST['turning_interval'] ?? '') !== '' ? (float)$_POST['turning_interval'] : null;
+  $egg_count = ($_POST['egg_count'] ?? '') !== '' ? (int)$_POST['egg_count'] : null;
   $duration_days = ($_POST['duration_days'] ?? '') !== '' ? (int)$_POST['duration_days'] : 21;
   $duration_hours = ($_POST['duration_hours'] ?? '') !== '' ? (int)$_POST['duration_hours'] : 0;
   $duration_minutes = ($_POST['duration_minutes'] ?? '') !== '' ? (int)$_POST['duration_minutes'] : 0;
@@ -146,6 +147,50 @@ if($action === 'add'){
   }
   $newStart = $startAt->getTimestamp();
   $newEnd = $newStart + max(1, $session_duration_sec);
+  $scheduledStartFormatted = $startAt->format('Y-m-d H:i:s');
+
+  if ($batch_id) {
+    $batchLookup = $pdo->prepare("SELECT id FROM batches WHERE id = ? AND user_id = ? LIMIT 1");
+    $batchLookup->execute([$batch_id, $uid]);
+    if (!$batchLookup->fetchColumn()) {
+      $batch_id = null;
+    }
+  }
+
+  if (!$batch_id && $session_duration_sec > 0) {
+    $eggType = !empty($_POST['egg_type']) ? trim((string)$_POST['egg_type']) : 'Chicken';
+    $batchName = sprintf('%s - %d eggs', $title ?: 'Batch', max(0, (int)($egg_count ?? 0)));
+    $batchStartDate = $startAt->format('Y-m-d');
+    $batchHatchDate = date('Y-m-d', strtotime('+' . $session_duration_sec . ' seconds', $newStart));
+
+    $batchStmt = $pdo->prepare(
+      "INSERT INTO batches (incubator_id, user_id, batch_name, egg_type, egg_count, start_date, expected_hatch_date, status, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, NOW())"
+    );
+    $batchNotes = 'SCHEDULED_START: ' . $scheduledStartFormatted;
+    $batchStmt->execute([
+      $incubator_id,
+      $uid,
+      $batchName,
+      $eggType,
+      $egg_count ?? 0,
+      $batchStartDate,
+      $batchHatchDate,
+      $batchNotes
+    ]);
+    $batch_id = (int)$pdo->lastInsertId();
+  } elseif ($batch_id) {
+    $pdo->prepare(
+      "UPDATE batches
+          SET status = 'scheduled', start_date = ?, expected_hatch_date = ?, notes = CONCAT('SCHEDULED_START: ', ?)
+        WHERE id = ?"
+    )->execute([
+      $startAt->format('Y-m-d'),
+      date('Y-m-d', strtotime('+' . $session_duration_sec . ' seconds', $newStart)),
+      $scheduledStartFormatted,
+      $batch_id
+    ]);
+  }
 
   $conflict = hasConflict(existingScheduleWindows($pdo, $incubator_id), $newStart, $newEnd);
   if ($conflict) {
@@ -155,8 +200,6 @@ if($action === 'add'){
     ]);
   }
 
-  // If the schedule is due now or in the past, verify device connectivity. If the incubator is offline,
-  // mark the schedule as 'failed' immediately and mark the associated batch as failed.
   $description = json_encode([
     'start_date' => $date,
     'start_time' => $time,
@@ -172,7 +215,10 @@ if($action === 'add'){
     'min_humidity' => $min_humidity,
     'max_humidity' => $max_humidity,
     'swing_duration_sec' => $swing_duration_sec,
-    'turning_interval' => $turning_interval
+    'turning_interval' => $turning_interval,
+    'egg_count' => $egg_count,
+    'batch_id' => $batch_id,
+    'scheduled_start_datetime' => $scheduledStartFormatted
   ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // Default to pending
     $statusToInsert = 'pending';
@@ -209,20 +255,38 @@ if($action === 'add'){
 if($action === 'update'){
   $id = (int)($_POST['id']??0);
   $title = trim($_POST['title']??'');
+  $batch_id = !empty($_POST['batch_id']) ? (int)$_POST['batch_id'] : null;
+  $incubator_id = !empty($_POST['incubator_id']) ? (int)$_POST['incubator_id'] : 0;
   $date = $_POST['date']??'';
   $time = $_POST['time']??'';
-  $action_type = $_POST['action_type']??'turning';
+  $action_type = $_POST['action_type'] ?? null;
+  $target_temp = ($_POST['target_temp'] ?? '') !== '' ? (float)$_POST['target_temp'] : null;
+  $min_temp = ($_POST['min_temp'] ?? '') !== '' ? (float)$_POST['min_temp'] : null;
+  $max_temp = ($_POST['max_temp'] ?? '') !== '' ? (float)$_POST['max_temp'] : null;
+  $target_humidity = ($_POST['target_humidity'] ?? '') !== '' ? (float)$_POST['target_humidity'] : null;
+  $min_humidity = ($_POST['min_humidity'] ?? '') !== '' ? (float)$_POST['min_humidity'] : null;
+  $max_humidity = ($_POST['max_humidity'] ?? '') !== '' ? (float)$_POST['max_humidity'] : null;
+  $swing_duration_sec = ($_POST['swing_duration_sec'] ?? '') !== '' ? (int)$_POST['swing_duration_sec'] : 30;
+  $turning_interval = ($_POST['turning_interval'] ?? '') !== '' ? (float)$_POST['turning_interval'] : null;
+  $egg_count = ($_POST['egg_count'] ?? '') !== '' ? (int)$_POST['egg_count'] : null;
   $duration_days = ($_POST['duration_days'] ?? '') !== '' ? (int)$_POST['duration_days'] : 21;
   $duration_hours = ($_POST['duration_hours'] ?? '') !== '' ? (int)$_POST['duration_hours'] : 0;
   $duration_minutes = ($_POST['duration_minutes'] ?? '') !== '' ? (int)$_POST['duration_minutes'] : 0;
   $duration_seconds = ($_POST['duration_seconds'] ?? '') !== '' ? (int)$_POST['duration_seconds'] : 0;
   $session_duration_sec = ($duration_days * 86400) + ($duration_hours * 3600) + ($duration_minutes * 60) + $duration_seconds;
 
-  $stmt0 = $pdo->prepare("SELECT incubator_id FROM schedules WHERE id=? AND created_by_role='user' AND created_by_id=? LIMIT 1");
+  $stmt0 = $pdo->prepare("SELECT incubator_id, action_type FROM schedules WHERE id=? AND created_by_role='user' AND created_by_id=? LIMIT 1");
   $stmt0->execute([$id, $uid]);
-  $incubator_id = (int)($stmt0->fetchColumn() ?: 0);
-  if (!$incubator_id) {
+  $row = $stmt0->fetch(PDO::FETCH_ASSOC);
+  if (!$row) {
     jsonResponse(['success' => false, 'message' => 'Schedule not found']);
+  }
+
+  if (!$incubator_id) {
+    $incubator_id = (int)$row['incubator_id'];
+  }
+  if ($action_type === null) {
+    $action_type = $row['action_type'] ?? 'turning';
   }
 
   $startAt = parseScheduleDateTime($date, $time);
@@ -239,6 +303,14 @@ if($action === 'update'){
     ]);
   }
 
+  // Do not allow scheduling in the past
+  if ($newStart <= time()) {
+    jsonResponse(['success' => false, 'message' => 'Scheduled start time must be in the future']);
+  }
+
+  // When updating to a future time, ensure status reflects scheduled/pending
+  $statusToUpdate = 'pending';
+
   $description = json_encode([
     'start_date' => $date,
     'start_time' => $time,
@@ -246,11 +318,20 @@ if($action === 'update'){
     'duration_hours' => $duration_hours,
     'duration_minutes' => $duration_minutes,
     'duration_seconds' => $duration_seconds,
-    'session_duration_sec' => $session_duration_sec
+    'session_duration_sec' => $session_duration_sec,
+    'target_temp' => $target_temp,
+    'min_temp' => $min_temp,
+    'max_temp' => $max_temp,
+    'target_humidity' => $target_humidity,
+    'min_humidity' => $min_humidity,
+    'max_humidity' => $max_humidity,
+    'swing_duration_sec' => $swing_duration_sec,
+    'turning_interval' => $turning_interval,
+    'egg_count' => $egg_count
   ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-  $stmt = $pdo->prepare("UPDATE schedules SET title=?,scheduled_date=?,scheduled_time=?,action_type=?,description=? WHERE id=? AND created_by_role='user' AND created_by_id=?");
-  $stmt->execute([$title,$date,$time,$action_type,$description,$id,$uid]);
+  $stmt = $pdo->prepare("UPDATE schedules SET incubator_id=?,batch_id=?,title=?,scheduled_date=?,scheduled_time=?,action_type=?,description=?,status=? WHERE id=? AND created_by_role='user' AND created_by_id=?");
+  $stmt->execute([$incubator_id,$batch_id,$title,$date,$time,$action_type,$description,$statusToUpdate,$id,$uid]);
   jsonResponse(['success'=>true]);
 }
 
@@ -262,8 +343,71 @@ if($action === 'delete'){
 
 if($action === 'mark_done'){
   $id = (int)($_POST['id']??0);
-  $pdo->prepare("UPDATE schedules SET status='done' WHERE id=?")->execute([$id]);
-  jsonResponse(['success'=>true]);
+  // Mark schedule done and if it represents a session start, create/promote a batch
+  $stmt = $pdo->prepare("SELECT * FROM schedules WHERE id=? LIMIT 1");
+  $stmt->execute([$id]);
+  $sched = $stmt->fetch(PDO::FETCH_ASSOC);
+  if (!$sched) jsonResponse(['success'=>false,'message'=>'Schedule not found']);
+
+  $pdo->beginTransaction();
+  try {
+    // Update schedule status to done
+    $pdo->prepare("UPDATE schedules SET status='done' WHERE id=?")->execute([$id]);
+
+    // If schedule already references a batch, promote that batch to incubating
+    if (!empty($sched['batch_id'])) {
+      $bid = (int)$sched['batch_id'];
+      $pdo->prepare("UPDATE batches SET status='incubating' WHERE id = ? AND status <> 'incubating'")
+        ->execute([$bid]);
+    } else {
+      // If the schedule description contains session info, create a new batch
+      $desc = [];
+      if (!empty($sched['description'])) {
+        $desc = json_decode($sched['description'], true) ?: [];
+      }
+      $sessionDuration = isset($desc['session_duration_sec']) ? (int)$desc['session_duration_sec'] : 0;
+      $eggCount = isset($desc['egg_count']) ? (int)$desc['egg_count'] : 0;
+      $eggType = isset($desc['egg_type']) ? trim($desc['egg_type']) : 'Chicken';
+
+      if ($sessionDuration > 0) {
+        $incubator_id = (int)$sched['incubator_id'];
+        $user_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 1;
+        $batchName = sprintf('%s - %d eggs', ($sched['title'] ?: 'Batch'), $eggCount);
+        // scheduled_date is YYYY-MM-DD, scheduled_time may be HH:MM:SS or HH:MM
+        $scheduledDateTime = trim($sched['scheduled_date'] . ' ' . ($sched['scheduled_time'] ?? '00:00'));
+        $startTs = strtotime($scheduledDateTime) ?: time();
+        $batchStartDate = date('Y-m-d', $startTs);
+        $batchHatchDate = date('Y-m-d', strtotime('+' . $sessionDuration . ' seconds', $startTs));
+
+        $ins = $pdo->prepare(
+          "INSERT INTO batches (incubator_id, user_id, batch_name, egg_type, egg_count, start_date, expected_hatch_date, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'incubating', NOW())"
+        );
+        $ins->execute([$incubator_id, $user_id, $batchName, $eggType, $eggCount, $batchStartDate, $batchHatchDate]);
+        $newBatchId = (int)$pdo->lastInsertId();
+
+        // Link schedule to the new batch
+        $pdo->prepare("UPDATE schedules SET batch_id = ? WHERE id = ?")->execute([$newBatchId, $id]);
+
+        // Upsert hardware_state for incubator: set session running
+        $sessionStartedAt = date('Y-m-d H:i:s', $startTs);
+        $sessionEndsAt = date('Y-m-d H:i:s', strtotime('+' . $sessionDuration . ' seconds', $startTs));
+
+        $up = $pdo->prepare(
+          "INSERT INTO hardware_state (incubator_id, session_status, session_started_at, session_ends_at, session_completed_at, current_mode, active_session_name, last_server_sync, last_seen, last_active_at)
+           VALUES (?, 'running', ?, ?, NULL, 'incubating', ?, NOW(), NOW(), NOW())
+           ON DUPLICATE KEY UPDATE session_status=VALUES(session_status), session_started_at=VALUES(session_started_at), session_ends_at=VALUES(session_ends_at), current_mode=VALUES(current_mode), active_session_name=VALUES(active_session_name), last_server_sync=VALUES(last_server_sync), last_seen=VALUES(last_seen), last_active_at=VALUES(last_active_at)"
+        );
+        $up->execute([$incubator_id, $sessionStartedAt, $sessionEndsAt, $batchName]);
+      }
+    }
+
+    $pdo->commit();
+    jsonResponse(['success'=>true]);
+  } catch (Exception $e) {
+    $pdo->rollBack();
+    jsonResponse(['success'=>false,'message'=>'Server error: '.$e->getMessage()]);
+  }
 }
 
 // Check for conflicts with existing schedules/batches

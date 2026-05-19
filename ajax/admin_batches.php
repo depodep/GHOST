@@ -17,7 +17,17 @@ if($action === 'add'){
 }
 if($action === 'update'){
   $id = (int)($_POST['id']??0);
-  $status = $_POST['status']??'incubating';
+  if (!$id) { jsonResponse(['success'=>false,'message'=>'Missing id']); }
+  $existingStmt = $pdo->prepare("SELECT batch_name, egg_type, egg_count, expected_hatch_date, status FROM batches WHERE id=? LIMIT 1");
+  $existingStmt->execute([$id]);
+  $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
+  if (!$existing) { jsonResponse(['success'=>false,'message'=>'Batch not found']); }
+
+  $batchName = (isset($_POST['name']) && $_POST['name'] !== '') ? trim($_POST['name']) : $existing['batch_name'];
+  $eggType = (isset($_POST['egg_type']) && $_POST['egg_type'] !== '') ? $_POST['egg_type'] : $existing['egg_type'];
+  $eggCount = array_key_exists('egg_count', $_POST) ? (int)($_POST['egg_count']) : (int)$existing['egg_count'];
+  $hatchDate = (isset($_POST['hatch_date']) && $_POST['hatch_date'] !== '') ? $_POST['hatch_date'] : $existing['expected_hatch_date'];
+  $status = $_POST['status'] ?? $existing['status'];
   $stmt = $pdo->prepare(
     "UPDATE batches
         SET batch_name=?,egg_type=?,egg_count=?,expected_hatch_date=?,status=?,
@@ -26,10 +36,10 @@ if($action === 'update'){
      WHERE id=?"
   );
   $stmt->execute([
-    $_POST['name']??'',
-    $_POST['egg_type']??'Chicken',
-    (int)($_POST['egg_count']??0),
-    $_POST['hatch_date']??'',
+    $batchName,
+    $eggType,
+    $eggCount,
+    $hatchDate,
     $status,
     $status,
     $status,

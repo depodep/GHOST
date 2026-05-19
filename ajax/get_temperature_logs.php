@@ -33,11 +33,11 @@ if (!$check->fetchColumn()) {
     exit;
 }
 
-// Get latest temperature logs
+// Get latest temperature logs (filter out invalid readings: temp must be > 0 and not NULL)
 $stmt = $pdo->prepare(
     "SELECT temperature, humidity, recorded_at, DATE_FORMAT(recorded_at,'%H:%i') AS lbl
      FROM temperature_logs 
-     WHERE incubator_id = ?
+     WHERE incubator_id = ? AND temperature > 0 AND temperature IS NOT NULL AND humidity IS NOT NULL
      ORDER BY recorded_at DESC 
      LIMIT ?
      "
@@ -63,7 +63,8 @@ $stateTemp = isset($state['current_temp']) ? (float)$state['current_temp'] : nul
 $stateHum = isset($state['current_humidity']) ? (float)$state['current_humidity'] : null;
 $stateSeen = $state['last_seen'] ?? null;
 
-if ($stateSeen && $stateTemp !== null && $stateHum !== null) {
+// Only append live state if temperatures are valid (> 0 and not NULL)
+if ($stateSeen && $stateTemp !== null && $stateHum !== null && $stateTemp > 0) {
     $stateTs = strtotime($stateSeen);
     $lastTs = $lastLogAt ? strtotime($lastLogAt) : 0;
     if ($stateTs && $stateTs > $lastTs) {

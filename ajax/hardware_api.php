@@ -203,6 +203,132 @@ function ensureBatchesSchema(PDO $pdo) {
     }
 }
 
+function refreshScheduleState(PDO $pdo, int $incubator_id): array {
+    ensureBatchesSchema($pdo);
+    $changes = [
+        'failed_batches' => 0,
+        'promoted_batches' => 0,
+        'failed_schedules' => 0,
+        'promoted_schedules' => 0
+    ];
+
+    $failedScheduleStmt = $pdo->prepare(
+        "SELECT s.id, s.batch_id
+         FROM schedules s
+         LEFT JOIN batches b ON b.id = s.batch_id
+         WHERE s.incubator_id = ?
+           AND s.status = 'pending'
+           AND CONCAT(s.scheduled_date, ' ', s.scheduled_time) < NOW()
+           AND (s.batch_id IS NULL OR b.status <> 'incubating')
+         ORDER BY s.scheduled_date ASC, s.scheduled_time ASC"
+    );
+    $failedScheduleStmt->execute([$incubator_id]);
+    $overdueSchedules = $failedScheduleStmt->fetchAll();
+
+    foreach ($overdueSchedules as $schedule) {
+        $updated = $pdo->prepare(
+            "UPDATE schedules SET status = 'failed' WHERE id = ? AND status = 'pending'"
+        )->execute([$schedule['id']]);
+
+        if ($updated !== false) {
+            $changes['failed_schedules']++;
+        }
+
+        if (!empty($schedule['batch_id'])) {
+            $batchUpdated = $pdo->prepare(
+                "UPDATE batches SET status = 'failed' WHERE id = ? AND status IN ('scheduled', 'incubating')"
+            )->execute([(int)$schedule['batch_id']]);
+
+            if ($batchUpdated !== false) {
+                $changes['failed_batches']++;
+            }
+        }
+    }
+
+    $failedStartCheckStmt = $pdo->prepare(
+        "SELECT id, batch_name, notes
+         FROM batches
+         WHERE incubator_id = ? AND status = 'scheduled'
+         ORDER BY created_at ASC"
+    );
+    $failedStartCheckStmt->execute([$incubator_id]);
+    $allScheduledBatches = $failedStartCheckStmt->fetchAll();
+
+    $now = new DateTime('now');
+    foreach ($allScheduledBatches as $sch) {
+        $notes = $sch['notes'] ?? '';
+        $scheduledStartTime = null;
+        if (preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
+            $scheduledStartTime = $matches[1];
+        }
+
+        if ($scheduledStartTime) {
+            try {
+                $startDateTime = new DateTime($scheduledStartTime);
+                $minutesSinceScheduled = ($now->getTimestamp() - $startDateTime->getTimestamp()) / 60;
+                if ($minutesSinceScheduled > 5) {
+                    $pdo->prepare(
+                        "UPDATE batches SET status = 'failed' WHERE id = ? AND status = 'scheduled'"
+                    )->execute([$sch['id']]);
+                    $changes['failed_batches']++;
+
+                    $updated = $pdo->prepare("UPDATE schedules SET status = 'failed' WHERE batch_id = ? AND status = 'pending'")
+                        ->execute([$sch['id']]);
+                    if ($updated !== false) {
+                        $changes['failed_schedules']++;
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("[Hardware API] Error parsing scheduled start time for batch {$sch['id']}: " . $e->getMessage());
+            }
+        }
+    }
+
+    $scheduledBatchStmt = $pdo->prepare(
+        "SELECT id, batch_name, notes
+         FROM batches
+         WHERE incubator_id = ? AND status = 'scheduled'
+         ORDER BY created_at ASC LIMIT 1"
+    );
+    $scheduledBatchStmt->execute([$incubator_id]);
+    $scheduledBatch = $scheduledBatchStmt->fetch();
+
+    if ($scheduledBatch) {
+        $notes = $scheduledBatch['notes'] ?? '';
+        $scheduledStartTime = null;
+        if (preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
+            $scheduledStartTime = $matches[1];
+        }
+
+        $shouldStart = false;
+        if ($scheduledStartTime) {
+            try {
+                $startDateTime = new DateTime($scheduledStartTime);
+                $shouldStart = ($now >= $startDateTime);
+            } catch (Exception $e) {
+                $shouldStart = true;
+            }
+        } else {
+            $shouldStart = true;
+        }
+
+        if ($shouldStart) {
+            $pdo->prepare(
+                "UPDATE batches SET status = 'incubating' WHERE id = ? AND status = 'scheduled'"
+            )->execute([$scheduledBatch['id']]);
+            $changes['promoted_batches']++;
+
+            $updated = $pdo->prepare("UPDATE schedules SET status = 'running' WHERE batch_id = ? AND status = 'pending'")
+                ->execute([$scheduledBatch['id']]);
+            if ($updated !== false) {
+                $changes['promoted_schedules']++;
+            }
+        }
+    }
+
+    return $changes;
+}
+
 function deriveHeaterGroupState(array $state) {
     $heaterFan = !empty($state['heater_fan_status']);
     $heater1 = !empty($state['heater_1_status']);
@@ -485,6 +611,8 @@ if ($action === 'device_status' || $action === 'device_heartbeat') {
         json_response(['success' => false, 'message' => 'Invalid data']);
     }
 
+    refreshScheduleState($pdo, $incubator_id);
+
     $temperature    = isset($_POST['temperature']) ? (float)$_POST['temperature'] : null;
     $humidity       = isset($_POST['humidity']) ? (float)$_POST['humidity'] : null;
     
@@ -677,14 +805,24 @@ if ($action === 'log_sensor' || $action === 'device_logs') {
 // ════════════════════════════════════════════
 //  4c. GET DEVICE CONFIG
 // ════════════════════════════════════════════
+if ($action === 'refresh_schedule_state') {
+    $incubator_id = (int)($_POST['incubator_id'] ?? 0);
+    if (!$incubator_id) {
+        json_response(['success' => false, 'message' => 'Missing incubator_id']);
+    }
+
+    $result = refreshScheduleState($pdo, $incubator_id);
+    json_response(array_merge(['success' => true, 'message' => 'Schedule state refreshed'], $result));
+}
+
 if ($action === 'get_device_config') {
     $incubator_id = (int)($_POST['incubator_id'] ?? 0);
     if (!$incubator_id) {
         json_response(['success' => false, 'message' => 'Missing incubator_id']);
     }
 
-    // Ensure schema is up-to-date
-    ensureBatchesSchema($pdo);
+    // Refresh batch state before returning device config
+    refreshScheduleState($pdo, $incubator_id);
 
     // Get hardware state first to check current session status
     $hwCheckStmt = $pdo->prepare(
@@ -692,91 +830,6 @@ if ($action === 'get_device_config') {
     );
     $hwCheckStmt->execute([$incubator_id]);
     $hwState = $hwCheckStmt->fetch();
-    
-    // ───────────────────────────────────────────────────────────────────────
-    //  AUTO-PROMOTE SCHEDULED BATCHES TO INCUBATING (when start time arrived)
-    // ───────────────────────────────────────────────────────────────────────
-    
-    // STEP 1: Mark any scheduled batches that FAILED to start (start time > 5 minutes in past)
-    $failedStartCheckStmt = $pdo->prepare(
-        "SELECT id, batch_name, notes
-         FROM batches
-         WHERE incubator_id = ? AND status = 'scheduled'
-         ORDER BY created_at ASC"
-    );
-    $failedStartCheckStmt->execute([$incubator_id]);
-    $allScheduledBatches = $failedStartCheckStmt->fetchAll();
-    
-    $now = new DateTime('now');
-    foreach ($allScheduledBatches as $sch) {
-        $notes = $sch['notes'] ?? '';
-        $scheduledStartTime = null;
-        if (preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
-            $scheduledStartTime = $matches[1];
-        }
-        
-        if ($scheduledStartTime) {
-            try {
-                $startDateTime = new DateTime($scheduledStartTime);
-                $minutesSinceScheduled = ($now->getTimestamp() - $startDateTime->getTimestamp()) / 60;
-                
-                // If start time was > 5 minutes ago and still scheduled, mark as FAILED
-                if ($minutesSinceScheduled > 5) {
-                    $pdo->prepare(
-                        "UPDATE batches SET status = 'failed' WHERE id = ? AND status = 'scheduled'"
-                    )->execute([$sch['id']]);
-                    error_log("[Hardware API] Scheduled batch {$sch['batch_name']} (ID: {$sch['id']}) marked FAILED - start time passed without promotion");
-                }
-            } catch (Exception $e) {
-                // If parsing fails, mark as failed after 5 minutes
-                error_log("[Hardware API] Error parsing scheduled start time for batch {$sch['id']}: " . $e->getMessage());
-            }
-        }
-    }
-    
-    // STEP 2: Auto-promote the FIRST scheduled batch if its time has arrived
-    $scheduledBatchStmt = $pdo->prepare(
-        "SELECT id, batch_name, start_date, expected_hatch_date, notes
-         FROM batches
-         WHERE incubator_id = ? AND status = 'scheduled'
-         ORDER BY created_at ASC LIMIT 1"
-    );
-    $scheduledBatchStmt->execute([$incubator_id]);
-    $scheduledBatch = $scheduledBatchStmt->fetch();
-    
-    if ($scheduledBatch) {
-        // Extract scheduled start time from notes (format: "SCHEDULED_START: YYYY-MM-DD HH:MM:SS")
-        $notes = $scheduledBatch['notes'] ?? '';
-        $scheduledStartTime = null;
-        if (preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
-            $scheduledStartTime = $matches[1];
-        }
-        
-        $shouldStart = false;
-        
-        if ($scheduledStartTime) {
-            try {
-                $startDateTime = new DateTime($scheduledStartTime);
-                $shouldStart = ($now >= $startDateTime);
-            } catch (Exception $e) {
-                // If parsing fails, default to immediate start
-                $shouldStart = true;
-            }
-        } else {
-            // No scheduled time specified, start immediately
-            $shouldStart = true;
-        }
-        
-        if ($shouldStart) {
-            // Promote to 'incubating' ← Auto-start happens HERE
-            $pdo->prepare(
-                "UPDATE batches SET status = 'incubating' WHERE id = ? AND status = 'scheduled'"
-            )->execute([$scheduledBatch['id']]);
-            error_log("[Hardware API] Batch {$scheduledBatch['batch_name']} (ID: {$scheduledBatch['id']}) auto-promoted to INCUBATING");
-            // Update scheduled batch reference for use below
-            $scheduledBatch['status'] = 'incubating';
-        }
-    }
     
     // Check for active batch 
     $batchCheckStmt = $pdo->prepare(
@@ -787,6 +840,28 @@ if ($action === 'get_device_config') {
     );
     $batchCheckStmt->execute([$incubator_id]);
     $activeBatch = $batchCheckStmt->fetch();
+
+    $nextBatchStmt = $pdo->prepare(
+        "SELECT id, batch_name, notes
+         FROM batches
+         WHERE incubator_id = ? AND status = 'scheduled'
+         ORDER BY created_at ASC
+         LIMIT 1"
+    );
+    $nextBatchStmt->execute([$incubator_id]);
+    $nextBatch = $nextBatchStmt->fetch();
+
+    $scheduledBatchCountStmt = $pdo->prepare(
+        "SELECT COUNT(*) FROM batches WHERE incubator_id = ? AND status = 'scheduled'"
+    );
+    $scheduledBatchCountStmt->execute([$incubator_id]);
+    $scheduledBatchCount = (int)$scheduledBatchCountStmt->fetchColumn();
+
+    $nextSessionStartAt = null;
+    if ($nextBatch && !empty($nextBatch['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $nextBatch['notes'], $matches)) {
+        $nextSessionStartAt = $matches[1];
+    }
+    $nextSessionStartEpoch = $nextSessionStartAt ? strtotime($nextSessionStartAt) : null;
     
     // ONLY mark batch as failed if:
     // 1. There IS an active incubating batch
@@ -833,8 +908,15 @@ if ($action === 'get_device_config') {
             'turning_interval' => 8,
             'swing_duration_sec' => 30,
             'session_status' => 'idle',
+            'session_id' => $activeBatch ? (int)$activeBatch['id'] : 0,
             'active_session_name' => $activeBatch ? $activeBatch['batch_name'] : '',
-            'session_name' => $activeBatch ? $activeBatch['batch_name'] : ''
+            'session_name' => $activeBatch ? $activeBatch['batch_name'] : '',
+            'next_session_id' => $nextBatch ? (int)$nextBatch['id'] : 0,
+            'next_session_name' => $nextBatch ? $nextBatch['batch_name'] : '',
+            'next_session_start_at' => $nextSessionStartAt,
+            'next_session_start_epoch' => $nextSessionStartEpoch,
+            'next_session_status' => $nextBatch ? 'scheduled' : 'idle',
+            'scheduled_batch_count' => $scheduledBatchCount
         ]);
     }
 
@@ -857,8 +939,15 @@ if ($action === 'get_device_config') {
     $row['target_hum'] = $row['target_humidity'];
     $row['min_hum'] = $row['min_humidity'];
     $row['max_hum'] = $row['max_humidity'];
+    $row['session_id'] = $activeBatch ? (int)$activeBatch['id'] : 0;
     $row['active_session_name'] = $row['active_session_name'] ?? '';
     $row['session_name'] = $row['active_session_name'];
+    $row['next_session_id'] = $nextBatch ? (int)$nextBatch['id'] : 0;
+    $row['next_session_name'] = $nextBatch ? $nextBatch['batch_name'] : '';
+    $row['next_session_start_at'] = $nextSessionStartAt;
+    $row['next_session_start_epoch'] = $nextSessionStartEpoch;
+    $row['next_session_status'] = $nextBatch ? 'scheduled' : 'idle';
+    $row['scheduled_batch_count'] = $scheduledBatchCount;
     $row = array_merge($row, calculateTurningLockdownState($row));
 
     json_response(array_merge(['success' => true], $row));
@@ -1032,11 +1121,22 @@ if ($action === 'start_session') {
     
     // Check if a scheduled batch already exists
     $scheduledStmt = $pdo->prepare(
-        "SELECT COUNT(*) FROM batches WHERE incubator_id = ? AND status = 'scheduled' LIMIT 1"
+        "SELECT id FROM batches WHERE incubator_id = ? AND status = 'scheduled'"
     );
     $scheduledStmt->execute([$incubator_id]);
-    if ((int)($scheduledStmt->fetchColumn() ?: 0) > 0) {
-        json_response(['success' => false, 'message' => 'A scheduled session already exists. Please cancel it first.']);
+    $scheduledBatchIds = array_map('intval', $scheduledStmt->fetchAll(PDO::FETCH_COLUMN, 0));
+    if (!empty($scheduledBatchIds)) {
+        if ($startImmediately) {
+            // Override existing scheduled sessions for immediate start.
+            $placeholders = implode(',', array_fill(0, count($scheduledBatchIds), '?'));
+            $pdo->prepare("UPDATE batches SET status='cancelled', terminated_at = NOW() WHERE id IN ($placeholders)")
+                ->execute($scheduledBatchIds);
+            $pdo->prepare("UPDATE schedules SET status='cancelled' WHERE batch_id IN ($placeholders) AND status = 'pending'")
+                ->execute($scheduledBatchIds);
+            error_log(sprintf("[Hardware API] start_session overriding scheduled batch ids=%s for immediate start", implode(',', $scheduledBatchIds)));
+        } else {
+            json_response(['success' => false, 'message' => 'A scheduled session already exists. Please cancel it first.']);
+        }
     }
 
     if ($session_duration_sec < 1) {
@@ -1267,28 +1367,38 @@ if ($action === 'get_live_status') {
     $batchStmt->execute([$incubator_id]);
     $activeBatch = $batchStmt->fetch();
 
-    if ($activeBatch && ($state['session_status'] ?? 'idle') !== 'running') {
-        $state['session_status'] = 'running';
+    if ($activeBatch) {
+        $needsUpdate = false;
+        if (($state['session_status'] ?? 'idle') !== 'running') {
+            $state['session_status'] = 'running';
+            $state['current_mode'] = 'incubating';
+            $needsUpdate = true;
+        }
         if (empty($state['active_session_name'])) {
             $state['active_session_name'] = $activeBatch['batch_name'];
+            $needsUpdate = true;
         }
         if (empty($state['session_started_at']) && !empty($activeBatch['start_date'])) {
             $state['session_started_at'] = $activeBatch['start_date'] . ' 00:00:00';
+            $needsUpdate = true;
         }
         if (empty($state['session_ends_at']) && !empty($activeBatch['expected_hatch_date'])) {
             $state['session_ends_at'] = $activeBatch['expected_hatch_date'] . ' 00:00:00';
+            $needsUpdate = true;
         }
 
-        $pdo->prepare(
-            "UPDATE hardware_state
-             SET session_status = 'running', current_mode = 'incubating', active_session_name = ?, session_started_at = ?, session_ends_at = ?, last_server_sync = NOW()
-             WHERE incubator_id = ?"
-        )->execute([
-            $state['active_session_name'],
-            $state['session_started_at'],
-            $state['session_ends_at'],
-            $incubator_id
-        ]);
+        if ($needsUpdate) {
+            $pdo->prepare(
+                "UPDATE hardware_state
+                 SET session_status = 'running', current_mode = 'incubating', active_session_name = ?, session_started_at = ?, session_ends_at = ?, last_server_sync = NOW()
+                 WHERE incubator_id = ?"
+            )->execute([
+                $state['active_session_name'],
+                $state['session_started_at'],
+                $state['session_ends_at'],
+                $incubator_id
+            ]);
+        }
     }
 
     if ($state['session_status'] === 'running' && !empty($state['session_ends_at']) && strtotime($state['session_ends_at']) <= time()) {
@@ -1323,6 +1433,7 @@ if ($action === 'get_live_status') {
     }
 
     $activeSessionName = $state['active_session_name'] ?? $state['batch_session_name'] ?? null;
+    $activeBatchId = $activeBatch ? (int)$activeBatch['id'] : (($state['session_id'] ?? null) ? (int)$state['session_id'] : null);
     $eggType = $activeBatch['egg_type'] ?? null;
     $eggCount = isset($activeBatch['egg_count']) ? (int)$activeBatch['egg_count'] : null;
     $state['heater_on'] = deriveHeaterGroupState($state) ? 1 : 0;
@@ -1361,6 +1472,11 @@ if ($action === 'get_live_status') {
 
     $tempSettingsId = $settingsRow['id'] ?? null;
 
+    // compute session number (count of batches for this incubator)
+    $sessionCountStmt = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE incubator_id = ?");
+    $sessionCountStmt->execute([$incubator_id]);
+    $sessionNumber = (int)$sessionCountStmt->fetchColumn();
+
     json_response([
         'success'     => true,
         'device_status' => $online ? 'online' : 'offline',
@@ -1386,11 +1502,14 @@ if ($action === 'get_live_status') {
         'session_completed_at' => $state['session_completed_at'],
         'session_status'       => $state['session_status'],
         'current_mode'         => $state['current_mode'],
+        'active_batch_id'      => $activeBatchId,
         'active_session_name'  => $activeSessionName,
         'incubation_day'       => $incubationDay,
         'turning_lockdown_active' => $lockdown['turning_lockdown_active'],
         'turning_lockdown_days_remaining' => $lockdown['turning_lockdown_days_remaining'],
         'temp_settings_id'     => $tempSettingsId ? (int)$tempSettingsId : null,
+        // session_number: how many batches/sessions have been created for this incubator (used for UI "pang ilang session")
+        'session_number'       => $sessionNumber,
         'egg_type'             => $eggType,
         'egg_count'            => $eggCount,
         'target_temp'          => $settingsRow['target_temp'] ?? null,
