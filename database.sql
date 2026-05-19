@@ -341,7 +341,7 @@ CREATE TABLE `batches` (
   `egg_count` int(11) DEFAULT 0,
   `start_date` date NOT NULL,
   `expected_hatch_date` date NOT NULL,
-  `status` enum('incubating','completed','terminated','hatched','failed','cancelled') DEFAULT 'incubating',
+  `status` enum('scheduled','incubating','completed','terminated','hatched','failed','cancelled') DEFAULT 'incubating',
   `notes` text DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `completed_at` datetime DEFAULT NULL,
@@ -745,7 +745,7 @@ CREATE TABLE `temperature_settings` (
   `target_humidity` decimal(5,2) DEFAULT 55.00,
   `min_humidity` decimal(5,2) DEFAULT 50.00,
   `max_humidity` decimal(5,2) DEFAULT 60.00,
-  `turning_interval` int(11) DEFAULT 8,
+  `turning_interval` decimal(5,2) DEFAULT 8.00,
   `updated_by_role` enum('admin','user') DEFAULT 'admin',
   `updated_by_id` int(11) DEFAULT NULL,
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()

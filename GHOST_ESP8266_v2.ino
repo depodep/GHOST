@@ -44,7 +44,7 @@ const char* WIFI_PASSWORD = "Incubator2026";
 // ─────────────────────────────────────────────
 
 // const char* SERVER_IP     = "192.168.70.46";  
-const char* SERVER_IP     = "10.153.245.46";  
+const char* SERVER_IP     = "10.114.35.46";  
 const int   SERVER_PORT   = 80;               
 const char* SERVER_BASE_PATH = "/GHOST";       
 const int   INCUBATOR_ID  = 1;                 
@@ -70,18 +70,18 @@ const unsigned long BOOT_ALL_MODULES_MS  = 10000;
 // ─────────────────────────────────────────────
 // Max EEPROM on ESP8266: 4096 bytes
 #define EEPROM_SIZE         4096
-#define EEPROM_TARGET_TEMP  0      // float (4 bytes)
-#define EEPROM_MIN_TEMP     4      // float (4 bytes)
-#define EEPROM_MAX_TEMP     8      // float (4 bytes)
-#define EEPROM_TARGET_HUM   12     // float (4 bytes)
-#define EEPROM_MIN_HUM      16     // float (4 bytes)
-#define EEPROM_MAX_HUM      20     // float (4 bytes)
-#define EEPROM_TURNING_INT  24     // int (4 bytes)
-#define EEPROM_SESSION_NAME 28     // string (50 bytes) - batch name
-#define EEPROM_SESSION_ID   78     // int (4 bytes) - session ID from server
-#define EEPROM_INIT_FLAG    82     // byte (1 byte) - 0xFF = initialized
-#define EEPROM_SWING_SEC    83     // int (4 bytes) - last swing duration sec
-#define EEPROM_SESSION_MODE 87     // byte (1 byte) - SessionMode
+#define EEPROM_TARGET_TEMP  0     
+#define EEPROM_MIN_TEMP     4   
+#define EEPROM_MAX_TEMP     8       
+#define EEPROM_TARGET_HUM   12     
+#define EEPROM_MIN_HUM      16    
+#define EEPROM_MAX_HUM      20     
+#define EEPROM_TURNING_INT  24 
+#define EEPROM_SESSION_NAME 28  
+#define EEPROM_SESSION_ID   78      
+#define EEPROM_INIT_FLAG    82  
+#define EEPROM_SWING_SEC    83  
+#define EEPROM_SESSION_MODE 87     
 
 // ─────────────────────────────────────────────
 //  PIN DEFINITIONS
@@ -164,7 +164,7 @@ float savedMaxTemp      = 38.00;
 float savedTargetHum    = 55.00;
 float savedMinHum       = 50.00;
 float savedMaxHum       = 60.00;
-int   savedTurningInt   = 8;
+float savedTurningInt   = 8.0f;
 int   savedSwingDurationSec = 30;
 bool  turningLockdownActive = false;
 int   turningLockdownDaysRemaining = -1;
@@ -193,11 +193,13 @@ unsigned long lastServerPost    = 0;
 unsigned long lastSettingsFetch = 0;
 unsigned long swingStartedAt    = 0;
 unsigned long lastSwingScheduledAt = 0;
+unsigned long lastSwingExecutedAt = 0;  // Track when swing last actually ran (for dashboard)
 unsigned long lastStatusPrint   = 0;
 unsigned long lastHeartbeatSent = 0;
 unsigned long lastExhaustCycleAt = 0;
 unsigned long exhaustCycleStartedAt = 0;
 bool exhaustCycleActive = false;
+unsigned long lastIdleTestCommand = 0;  // Track when last test command was executed in IDLE mode
 
 const char* getCurrentModeLabel() {
     if (TEST_MODE) return "TEST_MODE";
@@ -411,12 +413,22 @@ void loop() {
             readTemperature();
             readHumidity();
         }
-        // Heater OFF during idle
-        if (heaterGroupOn) setHeater(false);
-        if (heaterFanOn) setHeaterFan(false);
-        if (exhaustOn) setExhaust(false);
+        
+        // Poll for relay test commands (from accounts.php)
+        static unsigned long lastIdleRelayPoll = 0;
+        if (now - lastIdleRelayPoll >= COMMAND_INTERVAL) {
+            lastIdleRelayPoll = now;
+            pollServerForTestCommandsIdle();
+        }
+        
+        // Auto-shutdown logic: only turn off relays if not in test mode
+        // (test mode commands from accounts.php should be able to control relays)
+        if (heaterGroupOn && !hasActiveTestCommand()) setHeater(false);
+        if (heaterFanOn && !hasActiveTestCommand()) setHeaterFan(false);
+        if (exhaustOn && !hasActiveTestCommand()) setExhaust(false);
         exhaustCycleActive = false;
-        if (eggswingOn) setSwing(false);
+        if (eggswingOn && !hasActiveTestCommand()) setSwing(false);
+        
         if (now - lastSettingsFetch >= IDLE_SETTINGS_INTERVAL) {
             lastSettingsFetch = now;
             Serial.println(F("[IDLE] Fetching parameters from server..."));
@@ -481,6 +493,7 @@ void loop() {
         if (tempOK) {
             const bool overheat = currentTemp > savedMaxTemp;
             const bool isHeating = currentTemp < savedTargetTemp;
+            Serial.printf("[Exhaust] Temp=%.1f | Target=%.1f | Heating=%d | Overheat=%d | exhaustOn=%d\n", currentTemp, savedTargetTemp, isHeating, overheat, exhaustOn);
             
             if (overheat) {
                 if (!heaterFanOn) setHeaterFan(true);
@@ -519,8 +532,8 @@ void loop() {
         }
 
         // ── Auto-start swing on schedule (every savedTurningInt hours) ──
-        if (!swingManualOverride && !eggswingOn && savedTurningInt > 0 && !isTurningLockdownActive()) {
-            const unsigned long intervalMs = (unsigned long)savedTurningInt * 3600UL * 1000UL;
+        if (!swingManualOverride && !eggswingOn && savedTurningInt > 0.0f && !isTurningLockdownActive()) {
+            const unsigned long intervalMs = (unsigned long)(savedTurningInt * 3600.0f * 1000.0f);
             if (lastSwingScheduledAt == 0) {
                 lastSwingScheduledAt = now;
             } else if (now - lastSwingScheduledAt >= intervalMs) {
@@ -535,9 +548,7 @@ void loop() {
         // ── Check turning schedule (every 30 s) ──
         if (now - lastScheduleFetch >= SCHEDULE_INTERVAL) {
             lastScheduleFetch = now;
-            // Would normally check schedule, but in offline mode
-            // we could run a simple turn schedule based on savedTurningInt
-            // For now, just log that we're running
+           
             Serial.printf("[Session] Running: Temp=%0.1f°C (target %0.1f°C)\n", currentTemp, savedTargetTemp);
         }
 
@@ -823,8 +834,74 @@ void pollServerForTestCommands() {
 }
 
 // ─────────────────────────────────────────────
-//  TEST MODE: POST DHT data to server
+//  IDLE MODE: Check if test command is active
 // ─────────────────────────────────────────────
+bool hasActiveTestCommand() {
+    unsigned long now = millis();
+    // Allow relay commands to persist for 5 seconds after being set
+    // (prevents immediate shutdown of relays in IDLE mode)
+    return (now - lastIdleTestCommand) < 5000UL;
+}
+
+// ─────────────────────────────────────────────
+//  IDLE MODE: Poll server for relay commands
+// ─────────────────────────────────────────────
+void pollServerForTestCommandsIdle() {
+    String url = "http://";
+    url += SERVER_IP;
+    url += ":";
+    url += SERVER_PORT;
+    url += SERVER_BASE_PATH;
+    url += "/ajax/hardware_api.php?action=test_mode_get_relay&incubator_id=";
+    url += INCUBATOR_ID;
+    
+    httpClient.begin(wifiClient, url);
+    int httpCode = httpClient.GET();
+    
+    if (httpCode == HTTP_CODE_OK) {
+        String payload = httpClient.getString();
+        StaticJsonDocument<256> doc;
+        auto err = deserializeJson(doc, payload);
+        if (!err && doc["success"] == true && doc.containsKey("relay") && doc.containsKey("state")) {
+            String relay = doc["relay"];
+            bool state = doc["state"];
+            lastIdleTestCommand = millis();  // Mark that we received a command
+
+            if (relay == "heater") {
+                setHeater(state);
+                Serial.printf("[IDLE_CMD] Heater %s\n", state ? "ON" : "OFF");
+            } else if (relay == "heater_fan") {
+                heaterFanOn = state;
+                writeHeaterFan(state);
+                Serial.printf("[IDLE_CMD] Heater fan %s\n", state ? "ON" : "OFF");
+            } else if (relay == "heater_1") {
+                heater1On = state;
+                writeHeater1(state);
+                Serial.printf("[IDLE_CMD] Heater 1 %s\n", state ? "ON" : "OFF");
+            } else if (relay == "heater_2") {
+                heater2On = state;
+                writeHeater2(state);
+                Serial.printf("[IDLE_CMD] Heater 2 %s\n", state ? "ON" : "OFF");
+            } else if (relay == "eggswing") {
+                setSwing(state);
+                Serial.printf("[IDLE_CMD] Egg swing %s\n", state ? "ON" : "OFF");
+            } else if (relay == "exhaust") {
+                setExhaust(state);
+                Serial.printf("[IDLE_CMD] Exhaust %s\n", state ? "ON" : "OFF");
+            }
+
+            printRelayStates("IDLE_CMD");
+            postDeviceHeartbeat();
+        }
+    } else if (httpCode > 0) {
+        // No pending command or error - that's OK in IDLE mode
+        Serial.printf("[IDLE_POLL] HTTP %d (no pending command)\n", httpCode);
+    } else {
+        Serial.printf("[IDLE_POLL] Poll failed: %s\n", httpClient.errorToString(httpCode).c_str());
+    }
+    
+    httpClient.end();
+}
 void postTestDHTToServer() {
     String url = "http://";
     url += SERVER_IP;
@@ -888,6 +965,8 @@ void postSensorDataToServer() {
     postData += "&swing_on=" + String(eggswingOn ? 1 : 0);
     postData += "&exhaust=" + String(exhaustOn ? 1 : 0);
     postData += "&wifi_connected=" + String((WiFi.status() == WL_CONNECTED) ? 1 : 0);
+    // Send last swing execution time (when it actually ran)
+    postData += "&last_swing_executed_at=" + String(lastSwingExecutedAt);
 
     httpClient.begin(wifiClient, url);
     httpClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -928,6 +1007,7 @@ void postDeviceHeartbeat() {
     postData += "&swing=" + String(eggswingOn ? 1 : 0);
     postData += "&exhaust=" + String(exhaustOn ? 1 : 0);
     postData += "&wifi_connected=" + String((WiFi.status() == WL_CONNECTED) ? 1 : 0);
+    postData += "&last_swing_executed_at=" + String(lastSwingExecutedAt);
 
     httpClient.begin(wifiClient, url);
     httpClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -976,7 +1056,7 @@ void fetchParametersFromServer() {
             float newTargetHum = savedTargetHum;
             float newMinHum = savedMinHum;
             float newMaxHum = savedMaxHum;
-            int newTurningInt = savedTurningInt;
+            float newTurningInt = savedTurningInt;
             int newSwingDurationSec = savedSwingDurationSec;
             bool newTurningLockdownActive = turningLockdownActive;
             int newTurningLockdownDaysRemaining = turningLockdownDaysRemaining;
@@ -994,7 +1074,7 @@ void fetchParametersFromServer() {
             else if (doc.containsKey("min_hum")) newMinHum = doc["min_hum"];
             if (doc.containsKey("max_humidity")) newMaxHum = doc["max_humidity"];
             else if (doc.containsKey("max_hum")) newMaxHum = doc["max_hum"];
-            if (doc.containsKey("turning_interval")) newTurningInt = doc["turning_interval"];
+            if (doc.containsKey("turning_interval")) newTurningInt = doc["turning_interval"].as<float>();
             if (doc.containsKey("turning_lockdown_active")) newTurningLockdownActive = doc["turning_lockdown_active"];
             if (doc.containsKey("turning_lockdown_days_remaining")) newTurningLockdownDaysRemaining = doc["turning_lockdown_days_remaining"];
             if (doc.containsKey("swing_duration_sec")) {
@@ -1021,10 +1101,21 @@ void fetchParametersFromServer() {
                 hasSessionStatus ? sessionStatus : "(unchanged)",
                 activeSessionName,
                 doc["session_id"] | 0);
+            
+            if (hasSessionStatus && strcmp(sessionStatus, "scheduled") == 0) {
+                Serial.println(F("[Session] Batch is scheduled (waiting for start time)"));
+            }
 
             if (hasSessionStatus && strcmp(sessionStatus, "running") == 0) {
                 if (newSessionMode != MODE_RUNNING) {
                     newSessionMode = MODE_RUNNING;
+                    settingsChanged = true;
+                }
+            } else if (hasSessionStatus && strcmp(sessionStatus, "scheduled") == 0) {
+                // Session is scheduled — stay in IDLE until start time arrives
+                // Server will auto-promote to "running" when time is reached
+                if (newSessionMode != MODE_IDLE) {
+                    newSessionMode = MODE_IDLE;
                     settingsChanged = true;
                 }
             } else if (hasSessionStatus && strcmp(sessionStatus, "completed") == 0) {
@@ -1050,7 +1141,7 @@ void fetchParametersFromServer() {
                 fabsf(savedTargetHum - newTargetHum) > 0.001f ||
                 fabsf(savedMinHum - newMinHum) > 0.001f ||
                 fabsf(savedMaxHum - newMaxHum) > 0.001f ||
-                savedTurningInt != newTurningInt ||
+                fabsf(savedTurningInt - newTurningInt) > 0.001f ||
                 savedSwingDurationSec != newSwingDurationSec ||
                 turningLockdownActive != newTurningLockdownActive ||
                 turningLockdownDaysRemaining != newTurningLockdownDaysRemaining ||
@@ -1070,24 +1161,43 @@ void fetchParametersFromServer() {
             savedSwingDurationSec = newSwingDurationSec;
             turningLockdownActive = newTurningLockdownActive;
             turningLockdownDaysRemaining = newTurningLockdownDaysRemaining;
+            SessionMode prevSessionMode = sessionMode;
             sessionMode = newSessionMode;
             sessionId = newSessionId;
             strncpy(sessionName, newSessionName, sizeof(sessionName) - 1);
             sessionName[sizeof(sessionName) - 1] = '\0';
 
-            if (sessionMode == MODE_RUNNING) {
-                sessionStartedAt = sessionStartedAt == 0 ? millis() : sessionStartedAt;
+            // Only run transition actions when the session mode actually changed
+            if (sessionMode == MODE_RUNNING && prevSessionMode != MODE_RUNNING) {
+                unsigned long nowMs = millis();
+                sessionStartedAt = sessionStartedAt == 0 ? nowMs : sessionStartedAt;
+                // Calculate session end time: 21 days (default incubation period)
+                // If you need dynamic duration from server, add it to the device config response
+                const unsigned long sessionDurationMs = 21UL * 24UL * 3600UL * 1000UL;  // 21 days in milliseconds
+                sessionEndsAt = sessionStartedAt + sessionDurationMs;
+                
+                // Reset swing schedule so first turn starts immediately
+                // Set it to the past so the interval check is met on the next loop
+                if (savedTurningInt > 0.0f) {
+                    const unsigned long intervalMs = (unsigned long)(savedTurningInt * 3600.0f * 1000.0f);
+                    lastSwingScheduledAt = nowMs - intervalMs;
+                } else {
+                    lastSwingScheduledAt = 0;
+                }
+                
                 setHeater(true);
-                Serial.println(F("[Mode] Switched to INCUBATING (session active)"));
-            } else if (sessionMode == MODE_COMPLETED) {
+                Serial.printf("[Mode] Switched to INCUBATING (session active, ends in ~21 days)\n");
+            } else if (sessionMode == MODE_COMPLETED && prevSessionMode != MODE_COMPLETED) {
                 setHeater(false);
                 setSwing(false);
                 Serial.println(F("[Mode] Switched to COMPLETED (server session state)"));
-            } else if (sessionMode == MODE_IDLE) {
+            } else if (sessionMode == MODE_IDLE && prevSessionMode != MODE_IDLE) {
                 sessionStartedAt = 0;
                 sessionEndsAt = 0;
                 setHeater(false);
                 setSwing(false);
+                setHeaterFan(false);
+                setExhaust(false);
                 Serial.println(F("[Mode] Switched to IDLE (no active session)"));
             }
 
@@ -1185,7 +1295,7 @@ void loadParametersFromEEPROM() {
 void printSavedParameters() {
     Serial.printf("[Parameters] Target:%.1f°C (%.1f-%.1f)\n", savedTargetTemp, savedMinTemp, savedMaxTemp);
     Serial.printf("[Parameters] Humidity:%.1f%% (%.1f-%.1f)\n", savedTargetHum, savedMinHum, savedMaxHum);
-    Serial.printf("[Parameters] Turning interval: %d hours\n", savedTurningInt);
+            Serial.printf("[Parameters] Turning interval: %.2f hours\n", savedTurningInt);
     Serial.printf("[Parameters] Swing duration: %d sec\n", savedSwingDurationSec);
     Serial.printf("[Parameters] Session: %s (ID:%d)\n", sessionName, sessionId);
 }
@@ -1240,29 +1350,44 @@ bool isTurningLockdownActive() {
 //  RELAY SETTERS
 // ─────────────────────────────────────────────
 void setHeater(bool on) {
+    // Only update GPIO if state is actually changing
+    bool stateChanged = (heaterGroupOn != on);
     heaterGroupOn = on;
     heaterFanOn = on;
     heater1On = on;
     heater2On = on;
-    writeHeaterFan(on);
-    writeHeater1(on);
-    writeHeater2(on);
+    if (stateChanged) {
+        writeHeaterFan(on);
+        writeHeater1(on);
+        writeHeater2(on);
+    }
 }
 
 void setHeaterFan(bool on) {
-    heaterFanOn = on;
-    writeHeaterFan(on);
+    // Only update GPIO if state is actually changing
+    if (heaterFanOn != on) {
+        heaterFanOn = on;
+        writeHeaterFan(on);
+    }
 }
 
 void setSwing(bool on) {
-    eggswingOn = on;
-    if (on) swingStartedAt = millis();
-    writeEggSwing(on);
+    // Only update GPIO if state is actually changing
+    if (eggswingOn != on) {
+        eggswingOn = on;
+        if (on) {
+            swingStartedAt = millis();
+            lastSwingExecutedAt = swingStartedAt;  // Record when swing actually turned ON
+        }
+        writeEggSwing(on);
+    }
 }
 
 void setExhaust(bool on) {
-    exhaustOn = on;
-    writeExhaust(on);
+    if (exhaustOn != on) {
+        exhaustOn = on;
+        writeExhaust(on);
+    }
 }
 
 //testmode

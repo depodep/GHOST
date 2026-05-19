@@ -6,7 +6,7 @@ require_once 'header.php';
 $pdo = getDB();
 $uid = $_SESSION['user_id'];
 $schedules = $pdo->prepare("SELECT s.*, i.name as incubator_name, b.batch_name FROM schedules s JOIN incubators i ON s.incubator_id=i.id LEFT JOIN batches b ON s.batch_id=b.id WHERE b.user_id=? OR (s.created_by_role='user' AND s.created_by_id=?) ORDER BY s.scheduled_date DESC, s.scheduled_time DESC"); $schedules->execute([$uid,$uid]); $schedules = $schedules->fetchAll();
-$incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'")->fetchAll();
+$incubators = $pdo->query("SELECT id,name,location,capacity FROM incubators WHERE status='active'")->fetchAll();
 $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE user_id=? AND status='incubating'"); $batches_q->execute([$uid]); $myBatches = $batches_q->fetchAll();
 ?>
 <div class="d-flex justify-content-end mb-4">
@@ -16,14 +16,13 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
   <div class="ghost-panel-header"><span class="ghost-panel-title">📅 My Schedules</span></div>
   <div class="ghost-panel-body p-0">
     <table class="ghost-table">
-      <thead><tr><th>Title</th><th>Incubator</th><th>Date & Time</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Title</th><th>Incubator</th><th>Date & Time</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody>
       <?php foreach($schedules as $s): ?>
         <tr>
           <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($s['title']) ?></div><?php if($s['batch_name']): ?><div style="font-size:.72rem;color:var(--ghost-muted);"><?= htmlspecialchars($s['batch_name']) ?></div><?php endif; ?></td>
           <td style="font-size:.85rem;"><?= htmlspecialchars($s['incubator_name']) ?></td>
           <td><div style="font-size:.85rem;font-weight:600;"><?= date('M j, Y',strtotime($s['scheduled_date'])) ?></div><div style="font-size:.72rem;color:var(--ghost-muted);"><?= substr($s['scheduled_time'],0,5) ?></div></td>
-          <td style="font-size:.8rem;"><?= actionIcon($s['action_type'], true) ?></td>
           <td><span class="badge-<?= $s['status'] ?>"><?= $s['status'] ?></span></td>
           <td>
             <div class="d-flex gap-2">
@@ -48,21 +47,45 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
       <div class="modal-header">
         <div>
           <h5 class="modal-title"><i class="fas fa-calendar-plus me-2" style="color:var(--ghost-blue)"></i>Add Schedule</h5>
-          <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;">Use the same incubation defaults as the parameter modal when creating a task</div>
+          <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;">Review the incubation values before scheduling the session</div>
         </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body" style="padding:24px;">
         <div class="row g-4 align-items-start">
           <div class="col-lg-7">
-            <div id="as_inc_info_bar" style="background:rgba(245,166,35,.06);border:1px solid rgba(245,166,35,.2);border-radius:10px;padding:12px 16px;margin-bottom:20px;display:flex;gap:20px;flex-wrap:wrap;">
-              <div>
-                <div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Batch</div>
-                <div style="font-weight:700;color:white;font-size:.9rem;" id="as_info_batch">General</div>
+            <div class="row g-3 mb-3">
+              <div class="col-12">
+                <label class="form-label-ghost">Schedule Title</label>
+                <input type="text" class="form-control-ghost" id="as_title" placeholder="Enter schedule title">
               </div>
+              <div class="col-md-4">
+                <label class="form-label-ghost">Incubator</label>
+                <select class="form-select-ghost" id="as_incubator" onchange="syncScheduleIncubator()">
+                  <?php foreach($incubators as $inc): ?>
+                    <option value="<?= $inc['id'] ?>" data-loc="<?= htmlspecialchars($inc['location'] ?? '') ?>" data-cap="<?= htmlspecialchars($inc['capacity'] ?? '') ?>"><?= htmlspecialchars($inc['name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label-ghost">Batch</label>
+                <select class="form-select-ghost" id="as_batch" onchange="syncScheduleIncubator()">
+                  <option value="">General</option>
+                  <?php foreach($myBatches as $batch): ?>
+                    <option value="<?= $batch['id'] ?>" data-inc="<?= $batch['incubator_id'] ?>"><?= htmlspecialchars($batch['batch_name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+            </div>
+
+            <div id="as_inc_info_bar" style="background:rgba(245,166,35,.06);border:1px solid rgba(245,166,35,.2);border-radius:10px;padding:12px 16px;margin-bottom:20px;display:flex;gap:20px;flex-wrap:wrap;">
               <div>
                 <div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Incubator</div>
                 <div style="font-weight:700;color:white;font-size:.9rem;" id="as_info_incubator">—</div>
+              </div>
+              <div>
+                <div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Capacity</div>
+                <div style="font-weight:700;color:var(--ghost-amber);font-size:.9rem;" id="as_info_cap">—</div>
               </div>
               <div>
                 <div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Location</div>
@@ -71,13 +94,26 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
             </div>
 
             <div class="mb-3">
-              <label class="form-label-ghost">🐣 Egg Species / Type</label>
-              <select class="form-select-ghost" id="as_species" onchange="applyASSpeciesDefaults()">
-                <option value="chicken" data-target="37.5" data-min="37.0" data-max="38.0" data-hum="55" data-days="21">🐔 Chicken (21 days)</option>
-                <option value="duck" data-target="37.5" data-min="37.2" data-max="38.0" data-hum="60" data-days="28">🦆 Duck (28 days)</option>
-                <option value="quail" data-target="37.5" data-min="37.0" data-max="38.0" data-hum="50" data-days="18">🐦 Quail (18 days)</option>
-                <option value="custom" data-target="" data-min="" data-max="" data-hum="" data-days="">⚙️ Custom</option>
-              </select>
+              <label class="form-label-ghost">⏳ Session Duration</label>
+              <div class="row g-2">
+                <div class="col-3">
+                  <label class="form-label-ghost">Day</label>
+                  <input type="number" min="0" step="1" class="form-control-ghost" id="as_duration_days" value="21" oninput="updateSchedulePreview()" style="text-align:center;">
+                </div>
+                <div class="col-3">
+                  <label class="form-label-ghost">HH</label>
+                  <input type="number" min="0" max="23" step="1" class="form-control-ghost" id="as_duration_hours" value="0" oninput="updateSchedulePreview()" style="text-align:center;">
+                </div>
+                <div class="col-3">
+                  <label class="form-label-ghost">MM</label>
+                  <input type="number" min="0" max="59" step="1" class="form-control-ghost" id="as_duration_minutes" value="0" oninput="updateSchedulePreview()" style="text-align:center;">
+                </div>
+                <div class="col-3">
+                  <label class="form-label-ghost">SS</label>
+                  <input type="number" min="0" max="59" step="1" class="form-control-ghost" id="as_duration_seconds" value="0" oninput="updateSchedulePreview()" style="text-align:center;">
+                </div>
+              </div>
+              <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Use this instead of egg type presets. Example: 21 days 00:00:00 for chicken.</div>
             </div>
 
             <div class="mb-3">
@@ -91,7 +127,7 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
                 <div style="background:rgba(245,166,35,.05);border:1px solid rgba(245,166,35,.15);border-radius:12px;padding:18px;margin-bottom:0;">
                   <div style="font-size:.72rem;font-weight:700;color:var(--ghost-amber);letter-spacing:.12em;text-transform:uppercase;margin-bottom:14px;">🌡️ Temperature (°C)</div>
                   <div class="row g-2">
-                    <div class="col-12"><label class="form-label-ghost">Target °C</label><input type="number" step="0.1" class="form-control-ghost" id="as_target_temp" style="font-size:1.2rem;font-family:'Bebas Neue',sans-serif;color:var(--ghost-amber);text-align:center;"></div>
+                    <div class="col-12"><label class="form-label-ghost">Target °C</label><input type="number" step="0.1" class="form-control-ghost" id="as_target_temp" style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:var(--ghost-amber);text-align:center;"></div>
                     <div class="col-6"><label class="form-label-ghost">Min °C</label><input type="number" step="0.1" class="form-control-ghost" id="as_min_temp"></div>
                     <div class="col-6"><label class="form-label-ghost">Max °C</label><input type="number" step="0.1" class="form-control-ghost" id="as_max_temp"></div>
                   </div>
@@ -101,7 +137,7 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
                 <div style="background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15);border-radius:12px;padding:18px;margin-bottom:0;">
                   <div style="font-size:.72rem;font-weight:700;color:#3b82f6;letter-spacing:.12em;text-transform:uppercase;margin-bottom:14px;">💧 Humidity (%)</div>
                   <div class="row g-2">
-                    <div class="col-12"><label class="form-label-ghost">Target %</label><input type="number" step="0.1" class="form-control-ghost" id="as_target_hum" style="font-size:1.2rem;font-family:'Bebas Neue',sans-serif;color:#3b82f6;text-align:center;"></div>
+                    <div class="col-12"><label class="form-label-ghost">Target %</label><input type="number" step="0.1" class="form-control-ghost" id="as_target_hum" style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:#3b82f6;text-align:center;"></div>
                     <div class="col-6"><label class="form-label-ghost">Min %</label><input type="number" step="0.1" class="form-control-ghost" id="as_min_hum"></div>
                     <div class="col-6"><label class="form-label-ghost">Max %</label><input type="number" step="0.1" class="form-control-ghost" id="as_max_hum"></div>
                   </div>
@@ -122,13 +158,9 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
                   <input type="time" class="form-control-ghost" id="as_start_time" value="<?= date('H:i') ?>" oninput="updateSchedulePreview()">
                 </div>
                 <div class="col-12">
-                  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;">
-                    <div><label class="form-label-ghost">DD</label><input type="number" min="0" step="1" class="form-control-ghost" id="as_duration_days" value="21" oninput="updateSchedulePreview()"></div>
-                    <div><label class="form-label-ghost">HH</label><input type="number" min="0" max="23" step="1" class="form-control-ghost" id="as_duration_hours" value="0" oninput="updateSchedulePreview()"></div>
-                    <div><label class="form-label-ghost">MM</label><input type="number" min="0" max="59" step="1" class="form-control-ghost" id="as_duration_minutes" value="0" oninput="updateSchedulePreview()"></div>
-                    <div><label class="form-label-ghost">SS</label><input type="number" min="0" max="59" step="1" class="form-control-ghost" id="as_duration_seconds" value="0" oninput="updateSchedulePreview()"></div>
+                  <div style="font-size:.75rem;color:var(--ghost-muted);padding:10px 12px;background:rgba(255,255,255,.02);border:1px solid var(--ghost-border);border-radius:8px;">
+                    Session duration is set in the block above. This section previews when the scheduled session will start and end.
                   </div>
-                  <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:8px;">Duration until session ends.</div>
                 </div>
                 <div class="col-md-6">
                   <div style="background:rgba(245,166,35,.06);border:1px solid rgba(245,166,35,.16);border-radius:10px;padding:12px 14px;height:100%;">
@@ -161,13 +193,30 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
               <div class="row g-2">
                 <div class="col-12">
                   <label class="form-label-ghost">Run for (seconds)</label>
-                  <input type="number" min="5" max="300" class="form-control-ghost" id="as_sw_duration" value="30" style="font-size:1.2rem;font-family:'Bebas Neue',sans-serif;color:#22c55e;text-align:center;">
+                  <input type="number" min="5" max="300" step="1" class="form-control-ghost" id="as_sw_duration" value="30" style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:#22c55e;text-align:center;">
                   <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended: 30-60 seconds per cycle. Max 300 s.</div>
                 </div>
                 <div class="col-12 mt-2">
+                  <div style="font-size:.75rem;color:var(--ghost-muted);margin-bottom:8px;">Quick presets:</div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="document.getElementById('as_sw_duration').value=30">30 s</button>
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="document.getElementById('as_sw_duration').value=45">45 s</button>
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="document.getElementById('as_sw_duration').value=60">60 s</button>
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="document.getElementById('as_sw_duration').value=120">2 min</button>
+                  </div>
+                </div>
+                <div class="col-12 mt-2">
                   <label class="form-label-ghost">Turn eggs every (hours)</label>
-                  <input type="number" min="1" max="24" class="form-control-ghost" id="as_sw_interval" value="8" style="font-size:1.2rem;font-family:'Bebas Neue',sans-serif;color:white;text-align:center;">
-                  <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Eggs should be turned every <strong style="color:white;">3-8 hours</strong>.</div>
+                  <input type="number" min="0.01" max="24" step="0.01" class="form-control-ghost" id="as_sw_interval" value="8" style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:white;text-align:center;">
+                  <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended: 3–8 hours. Common default: 4 hours. Fractional values are allowed.</div>
+                  <div id="as_sw_interval_preview" style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;"></div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(3)">3 h</button>
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(4)">4 h</button>
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(6)">6 h</button>
+                    <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(8)">8 h</button>
+                  </div>
+                  <div style="font-size:.72rem;color:var(--ghost-muted);margin-top:8px;">Egg turning pauses automatically during the final 3 days before hatch.</div>
                 </div>
               </div>
             </div>
@@ -204,6 +253,31 @@ $batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE
 </div>
 
 <script>
+function formatIntervalMinutes(hours) {
+  if (!Number.isFinite(hours) || hours <= 0) return '';
+  const minutes = hours * 60;
+  const rounded = (Math.round(minutes * 10) / 10).toFixed(minutes % 1 === 0 ? 0 : 1);
+  return `≈ ${rounded} min`;
+}
+
+function updateIntervalPreview(inputId, outputId) {
+  const input = document.getElementById(inputId);
+  const output = document.getElementById(outputId);
+  if (!input || !output) return;
+  const hours = parseFloat(input.value);
+  output.textContent = formatIntervalMinutes(hours);
+}
+
+window.addEventListener('load', function() {
+  const intervalInput = document.getElementById('as_sw_interval');
+  if (intervalInput) {
+    intervalInput.addEventListener('input', function() {
+      updateIntervalPreview('as_sw_interval', 'as_sw_interval_preview');
+    });
+    updateIntervalPreview('as_sw_interval', 'as_sw_interval_preview');
+  }
+});
+
 function addSched(){
   const durationDays = parseInt($('#as_duration_days').val(), 10) || 0;
   const durationHours = parseInt($('#as_duration_hours').val(), 10) || 0;
@@ -211,6 +285,17 @@ function addSched(){
   const durationSeconds = parseInt($('#as_duration_seconds').val(), 10) || 0;
   const startDate = $('#as_start_date').val();
   const startTime = $('#as_start_time').val();
+  const swingDuration = parseInt($('#as_sw_duration').val(), 10);
+  const turningInterval = parseFloat($('#as_sw_interval').val());
+
+  if (!Number.isFinite(swingDuration) || swingDuration < 5 || swingDuration > 300) {
+    showToast('Swing duration must be between 5 and 300 seconds.', 'error');
+    return;
+  }
+  if (!Number.isFinite(turningInterval) || turningInterval < 0.01 || turningInterval > 24) {
+    showToast('Invalid turning interval.', 'error');
+    return;
+  }
   showLoader('Saving Schedule…');
   $.ajax({url:'../ajax/user_schedules.php',method:'POST',data:{
     action:'add',
@@ -221,15 +306,14 @@ function addSched(){
     start_time:startTime,
     date:startDate,
     time:startTime,
-    action_type:$('#as_action').val(),
     target_temp:$('#as_target_temp').val(),
     min_temp:$('#as_min_temp').val(),
     max_temp:$('#as_max_temp').val(),
     target_humidity:$('#as_target_hum').val(),
     min_humidity:$('#as_min_hum').val(),
     max_humidity:$('#as_max_hum').val(),
-    swing_duration_sec:$('#as_sw_duration').val(),
-    turning_interval:$('#as_sw_interval').val(),
+    swing_duration_sec:swingDuration,
+    turning_interval:turningInterval,
     duration_days:durationDays,
     duration_hours:durationHours,
     duration_minutes:durationMinutes,
@@ -242,17 +326,36 @@ function addSched(){
 function syncScheduleIncubator(){
   const batchSelect = document.getElementById('as_batch');
   const incubatorSelect = document.getElementById('as_incubator');
-  const batchInfo = document.getElementById('as_info_batch');
   const incubatorInfo = document.getElementById('as_info_incubator');
-  const batchOption = batchSelect.options[batchSelect.selectedIndex];
-  if (batchOption && batchOption.dataset && batchOption.dataset.inc) {
-    incubatorSelect.value = batchOption.dataset.inc;
+  const incubatorCap = document.getElementById('as_info_cap');
+  const incubatorLoc = document.getElementById('as_info_loc');
+
+  if (batchSelect && incubatorSelect) {
+    const batchOption = batchSelect.options[batchSelect.selectedIndex];
+    if (batchOption && batchOption.dataset && batchOption.dataset.inc) {
+      incubatorSelect.value = batchOption.dataset.inc;
+    }
   }
-  if (batchInfo) {
-    batchInfo.textContent = batchSelect.value ? batchSelect.options[batchSelect.selectedIndex].textContent : 'General';
-  }
+
+  const selectedBatch = batchSelect && batchSelect.options[batchSelect.selectedIndex]
+    ? batchSelect.options[batchSelect.selectedIndex]
+    : null;
+  const selectedIncubator = incubatorSelect && incubatorSelect.options[incubatorSelect.selectedIndex]
+    ? incubatorSelect.options[incubatorSelect.selectedIndex]
+    : null;
+
   if (incubatorInfo) {
-    incubatorInfo.textContent = incubatorSelect.value ? incubatorSelect.options[incubatorSelect.selectedIndex].textContent : '—';
+    incubatorInfo.textContent = selectedIncubator ? selectedIncubator.textContent : '—';
+  }
+  if (incubatorCap) {
+    incubatorCap.textContent = selectedIncubator && selectedIncubator.dataset && selectedIncubator.dataset.cap
+      ? `${selectedIncubator.dataset.cap} eggs`
+      : '—';
+  }
+  if (incubatorLoc) {
+    incubatorLoc.textContent = selectedIncubator && selectedIncubator.dataset && selectedIncubator.dataset.loc
+      ? selectedIncubator.dataset.loc
+      : '—';
   }
   updateSchedulePreview();
 }
@@ -265,6 +368,8 @@ function resetScheduleDurationDefaults(){
   document.getElementById('as_duration_seconds').value = 0;
   document.getElementById('as_sw_duration').value = 30;
   document.getElementById('as_sw_interval').value = 8;
+  const titleInput = document.getElementById('as_title');
+  if (titleInput) titleInput.value = '';
   updateSchedulePreview();
 }
 function updateSchedulePreview(){
@@ -312,6 +417,7 @@ function updateSchedulePreview(){
 document.getElementById('addSchedModal').addEventListener('show.bs.modal', function() {
   syncScheduleIncubator();
   resetScheduleDurationDefaults();
+  syncScheduleIncubator();
 });
 function editSched(s){
   $('#es2_id').val(s.id);$('#es2_title').val(s.title);$('#es2_date').val(s.scheduled_date);
@@ -336,27 +442,20 @@ function markDone(id){
   $.post('../ajax/user_schedules.php',{action:'mark_done',id},r=>{hideLoader();if(r.success){showToast('Marked done!');setTimeout(()=>location.reload(),600);}else showToast(r.message,'error');},'json');
 }
 
-// Helpers for Add Schedule modal to match parameter modal behavior
-function applyASSpeciesDefaults(){
-  const sel = document.getElementById('as_species');
-  const opt = sel.options[sel.selectedIndex];
-  if(!opt) return;
-  const target = opt.dataset.target || '';
-  const min = opt.dataset.min || '';
-  const max = opt.dataset.max || '';
-  const hum = opt.dataset.hum || '';
-  const days = opt.dataset.days || '';
-  if(target) document.getElementById('as_target_temp').value = target;
-  if(min) document.getElementById('as_min_temp').value = min;
-  if(max) document.getElementById('as_max_temp').value = max;
-  if(hum) document.getElementById('as_target_hum').value = hum;
-  if(days) document.getElementById('as_duration_days').value = days;
-  updateSchedulePreview();
-}
-
 function setTurningIntervalPreset(h){
   const el = document.getElementById('as_sw_interval') || document.getElementById('sw_interval');
-  if(el) el.value = h;
+  if(el) {
+    el.value = h;
+    updateIntervalPreview('as_sw_interval', 'as_sw_interval_preview');
+  }
 }
+
+// Auto-adjust min/max to ±3 when target temperature/humidity inputs change
+;(function(){
+    const tIn = document.getElementById('as_target_temp');
+    const hIn = document.getElementById('as_target_hum');
+    if (tIn) tIn.addEventListener('input', function(){ const v = parseFloat(this.value); if (!isNaN(v)) { const min = (v - 3).toFixed(1); const max = (v + 3).toFixed(1); const elMin = document.getElementById('as_min_temp'); const elMax = document.getElementById('as_max_temp'); if(elMin) elMin.value = min; if(elMax) elMax.value = max; } });
+    if (hIn) hIn.addEventListener('input', function(){ const v = parseFloat(this.value); if (!isNaN(v)) { const min = (v - 3).toFixed(1); const max = (v + 3).toFixed(1); const elMin = document.getElementById('as_min_hum'); const elMax = document.getElementById('as_max_hum'); if(elMin) elMin.value = min; if(elMax) elMax.value = max; } });
+})();
 </script>
 <?php require_once 'footer.php'; ?>

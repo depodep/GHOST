@@ -136,7 +136,7 @@ $tempLogs = array_reverse($pdo->query(
         </div>
 
         <div class="control-buttons">
-          <button id="btnStart" onclick="startSessionQuick()" disabled title="Start incubation session">
+          <button id="btnStart" onclick="startSessionQuick()" title="Start incubation session">
             <i class="fas fa-play"></i> Start
           </button>
           <button id="btnSetParams" onclick="openIncubateModal()" disabled title="Set incubation parameters">
@@ -381,7 +381,7 @@ $tempLogs = array_reverse($pdo->query(
           <div class="row g-2">
             <div class="col-12">
               <label class="form-label-ghost">Run for (seconds)</label>
-              <input type="number" min="5" max="300" class="form-control-ghost" id="sw_duration" value="30"
+              <input type="number" min="5" max="300" step="1" class="form-control-ghost" id="sw_duration" value="30"
                 style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:#22c55e;text-align:center;">
               <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended: 30–60 seconds per cycle. Max 300 s.</div>
             </div>
@@ -392,10 +392,13 @@ $tempLogs = array_reverse($pdo->query(
         <div style="background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);border-radius:12px;padding:18px;margin-bottom:14px;">
           <div style="font-size:.72rem;font-weight:700;color:var(--ghost-muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:14px;">🔁 Auto-Turn Interval</div>
           <label class="form-label-ghost">Turn eggs every (hours)</label>
-          <input type="number" min="1" max="24" class="form-control-ghost" id="sw_interval" value="8"
+          <input type="number" min="0.01" max="24" step="0.01" class="form-control-ghost" id="sw_interval" value="8"
             style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:white;text-align:center;">
-          <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended: 3–8 hours. Common default: 4 hours.</div>
+          <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended: 3–8 hours. Common default: 4 hours. Fractional values are allowed.</div>
+          <div id="sw_interval_preview" style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;"></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+            <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(0.05)">0.05 h</button>
+            <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(0.15)">0.15 h</button>
             <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(3)">3 h</button>
             <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(4)">4 h</button>
             <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;" onclick="setTurningIntervalPreset(6)">6 h</button>
@@ -459,6 +462,14 @@ window.addEventListener('load', function() {
   
   // Start auto-refresh of temperature chart every 30 seconds
   setInterval(refreshTemperatureChart, 30000);
+
+  const intervalInput = document.getElementById('sw_interval');
+  if (intervalInput) {
+    intervalInput.addEventListener('input', function() {
+      updateIntervalPreview('sw_interval', 'sw_interval_preview');
+    });
+    updateIntervalPreview('sw_interval', 'sw_interval_preview');
+  }
 });
 
 // Function to refresh temperature chart with latest data
@@ -487,6 +498,27 @@ function selectedOpt() {
   return sel.options[sel.selectedIndex];
 }
 
+function syncSelectedOptSettings(settings) {
+  const opt = selectedOpt();
+  if (!opt || !settings) return;
+
+  const pairs = {
+    target: settings.target_temp ?? settings.targetTemp,
+    min: settings.min_temp ?? settings.minTemp,
+    max: settings.max_temp ?? settings.maxTemp,
+    th: settings.target_humidity ?? settings.targetHum,
+    thmin: settings.min_humidity ?? settings.minHum,
+    thmax: settings.max_humidity ?? settings.maxHum,
+    interval: settings.turning_interval ?? settings.interval
+  };
+
+  Object.entries(pairs).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== '') {
+      opt.dataset[key] = value;
+    }
+  });
+}
+
 function onIncubatorChange() {
   fetchLiveStatus();
 }
@@ -496,22 +528,85 @@ function getIncubationFormValues() {
   const speciesOption = species.options[species.selectedIndex];
   return {
     incId: document.getElementById('qc_incubator_id').value,
-    eggCount: parseInt(document.getElementById('inc_egg_count').value) || 0,
-    targetTemp: parseFloat(document.getElementById('inc_target_temp').value),
-    minTemp: parseFloat(document.getElementById('inc_min_temp').value),
-    maxTemp: parseFloat(document.getElementById('inc_max_temp').value),
-    targetHum: parseFloat(document.getElementById('inc_target_hum').value),
-    minHum: parseFloat(document.getElementById('inc_min_hum').value),
-    maxHum: parseFloat(document.getElementById('inc_max_hum').value),
-    duration: parseInt(document.getElementById('sw_duration').value) || 30,
-    interval: parseInt(document.getElementById('sw_interval').value) || 8,
-    sessionDays: parseInt(speciesOption.dataset.days || '21') || 21
+    species: speciesOption.value,
+    eggCount: readIntInput('inc_egg_count', 0, 1, 99999),
+    targetTemp: readFloatInput('inc_target_temp', 37.5),
+    minTemp: readFloatInput('inc_min_temp', 37.0),
+    maxTemp: readFloatInput('inc_max_temp', 38.0),
+    targetHum: readFloatInput('inc_target_hum', 55.0),
+    minHum: readFloatInput('inc_min_hum', 50.0),
+    maxHum: readFloatInput('inc_max_hum', 60.0),
+    duration: readIntInput('sw_duration', 30, 5, 300),
+    interval: readFloatInput('sw_interval', 8.0),
+    sessionDays: parseInt(speciesOption.dataset.days || '21', 10) || 21
   };
 }
 
 function setTurningIntervalPreset(hours) {
   const input = document.getElementById('sw_interval');
-  if (input) input.value = hours;
+  if (input) {
+    input.value = hours;
+    updateIntervalPreview('sw_interval', 'sw_interval_preview');
+  }
+}
+
+function formatIntervalMinutes(hours) {
+  if (!Number.isFinite(hours) || hours <= 0) return '';
+  const minutes = hours * 60;
+  const rounded = (Math.round(minutes * 10) / 10).toFixed(minutes % 1 === 0 ? 0 : 1);
+  return `≈ ${rounded} min`;
+}
+
+function updateIntervalPreview(inputId, outputId) {
+  const input = document.getElementById(inputId);
+  const output = document.getElementById(outputId);
+  if (!input || !output) return;
+  const hours = parseFloat(input.value);
+  output.textContent = formatIntervalMinutes(hours);
+}
+
+function sanitizeFloatValue(value, fallback, minValue, maxValue) {
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < minValue || parsed > maxValue) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function readFloatInput(id, fallback) {
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  const parsed = parseFloat(el.value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readIntInput(id, fallback, minValue, maxValue) {
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  const parsed = parseWholeNumberInput(el.value);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (parsed < minValue || parsed > maxValue) return fallback;
+  return parsed;
+}
+
+function parseWholeNumberInput(value) {
+  const raw = String(value ?? '').trim();
+  if (raw === '') return NaN;
+
+  const direct = Number(raw);
+  if (Number.isFinite(direct) && Number.isInteger(direct)) {
+    return direct;
+  }
+
+  if (/^0\.\d+$/.test(raw)) {
+    const digits = raw.slice(2).replace(/[^0-9]/g, '');
+    if (digits) {
+      return parseInt(digits, 10);
+    }
+  }
+
+  const integerPart = parseInt(raw, 10);
+  return Number.isFinite(integerPart) ? integerPart : NaN;
 }
 
 function saveIncubationSettings(startSession) {
@@ -521,7 +616,7 @@ function saveIncubationSettings(startSession) {
   if (isNaN(values.targetTemp) || isNaN(values.minTemp) || isNaN(values.maxTemp)) { alert('Please fill in all temperature fields.'); return; }
   if (values.minTemp >= values.maxTemp) { alert('Min temp must be less than Max temp.'); return; }
   if (isNaN(values.duration) || values.duration < 5 || values.duration > 300) { alert('Swing duration must be between 5 and 300 seconds.'); return; }
-  if (!Number.isFinite(values.interval) || values.interval < 1) { alert('Turning interval too short.'); return; }
+  if (!Number.isFinite(values.interval) || values.interval < 0.01) { alert('Turning interval too short.'); return; }
   if (values.interval > 24) { alert('Turning interval must be 24 hours or less.'); return; }
 
   showFb('Saving parameters…', 'info');
@@ -541,6 +636,8 @@ function saveIncubationSettings(startSession) {
       return;
     }
 
+    syncSelectedOptSettings(values);
+
     $.post('../ajax/hardware_api.php', {
       action: 'set_swing_duration',
       incubator_id: values.incId,
@@ -557,7 +654,7 @@ function saveIncubationSettings(startSession) {
         action: 'start_session',
         incubator_id: values.incId,
         egg_count: values.eggCount,
-        egg_type: speciesOption.value,
+        egg_type: values.species,
         session_days: values.sessionDays,
         token: 'ghost_hw_secret_2024'
       }, function(startRes) {
@@ -595,8 +692,9 @@ function openIncubateModal() {
   document.getElementById('inc_target_hum').value  = opt.dataset.th     || 55.0;
   document.getElementById('inc_min_hum').value     = opt.dataset.thmin  || 50.0;
   document.getElementById('inc_max_hum').value     = opt.dataset.thmax  || 60.0;
-  document.getElementById('sw_duration').value     = 30;
-  document.getElementById('sw_interval').value     = opt.dataset.interval || 8;
+  document.getElementById('sw_duration').value     = sanitizeFloatValue(opt.dataset.swingDuration, 30, 5, 300);
+  document.getElementById('sw_interval').value     = sanitizeFloatValue(opt.dataset.interval, 8, 0.01, 24);
+  updateIntervalPreview('sw_interval', 'sw_interval_preview');
 
   new bootstrap.Modal(document.getElementById('incubateModal')).show();
 }
@@ -665,7 +763,7 @@ function openSwingModal() {
   const opt = selectedOpt();
   if (!opt || !opt.value) { showFb('No active incubator selected.','warning'); return; }
   // Pre-fill interval from saved settings
-  document.getElementById('sw_interval').value = opt.dataset.interval || 8;
+  document.getElementById('sw_interval').value = sanitizeFloatValue(opt.dataset.interval, 8, 0.01, 24);
   new bootstrap.Modal(document.getElementById('swingModal')).show();
 }
 
@@ -731,10 +829,11 @@ function confirmStartSession() {
 function confirmSwing() {
   const incId    = document.getElementById('qc_incubator_id').value;
   const duration = parseInt(document.getElementById('sw_duration').value) || 30;
-  const interval = parseInt(document.getElementById('sw_interval').value) || 8;
+  const interval = parseFloat(document.getElementById('sw_interval').value) || 8;
 
   if (!incId) return;
   if (duration < 5 || duration > 300) { alert('Duration must be between 5 and 300 seconds.'); return; }
+  if (interval < 0.01 || interval > 24) { alert('Invalid turning interval.'); return; }
 
   // 1. Save turning interval to DB
   $.post('../ajax/admin_temperature.php', {
@@ -897,6 +996,7 @@ function fetchLiveStatus() {
     }
     
     setStatusPill('deviceStatusBadge', 'deviceStatusDot', 'deviceStatusText', isOnline, 'ONLINE', 'OFFLINE', 'online', 'offline');
+    syncSelectedOptSettings(res);
     
     // Only display data if device is online
     if (isOnline) {

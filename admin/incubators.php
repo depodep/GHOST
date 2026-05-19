@@ -166,7 +166,7 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
           </div>
           <div class="col-md-6"><label class="form-label-ghost">Target Temp (°C)</label><input type="number" step="0.1" class="form-control-ghost" id="ai_target_temp" value="37.5"></div>
           <div class="col-md-6"><label class="form-label-ghost">Target Humidity (%)</label><input type="number" step="0.1" class="form-control-ghost" id="ai_target_humidity" value="55"></div>
-          <div class="col-md-6"><label class="form-label-ghost">Turning Interval (hrs)</label><input type="number" class="form-control-ghost" id="ai_turning_interval" value="8"></div>
+          <div class="col-md-6"><label class="form-label-ghost">Turning Interval (hrs)</label><input type="number" min="0.01" step="0.01" class="form-control-ghost" id="ai_turning_interval" value="8"></div>
         </div>
       </div>
       <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button class="btn-ghost" onclick="addIncub()"><i class="fas fa-save me-2"></i>Save</button></div>
@@ -193,7 +193,7 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
           </div>
           <div class="col-md-6"><label class="form-label-ghost">Target Temp (°C)</label><input type="number" step="0.1" class="form-control-ghost" id="ei_target_temp"></div>
           <div class="col-md-6"><label class="form-label-ghost">Target Humidity (%)</label><input type="number" step="0.1" class="form-control-ghost" id="ei_target_humidity"></div>
-          <div class="col-md-6"><label class="form-label-ghost">Turning Interval (hrs)</label><input type="number" class="form-control-ghost" id="ei_turning_interval"></div>
+          <div class="col-md-6"><label class="form-label-ghost">Turning Interval (hrs)</label><input type="number" min="0.01" step="0.01" class="form-control-ghost" id="ei_turning_interval"></div>
         </div>
       </div>
       <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button class="btn-ghost" onclick="updateIncub()"><i class="fas fa-save me-2"></i>Update</button></div>

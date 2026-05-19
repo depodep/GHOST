@@ -132,7 +132,7 @@ if($action === 'add'){
   $min_humidity = ($_POST['min_humidity'] ?? '') !== '' ? (float)$_POST['min_humidity'] : null;
   $max_humidity = ($_POST['max_humidity'] ?? '') !== '' ? (float)$_POST['max_humidity'] : null;
   $swing_duration_sec = ($_POST['swing_duration_sec'] ?? '') !== '' ? (int)$_POST['swing_duration_sec'] : 30;
-  $turning_interval = ($_POST['turning_interval'] ?? '') !== '' ? (int)$_POST['turning_interval'] : null;
+  $turning_interval = ($_POST['turning_interval'] ?? '') !== '' ? (float)$_POST['turning_interval'] : null;
   $duration_days = ($_POST['duration_days'] ?? '') !== '' ? (int)$_POST['duration_days'] : 21;
   $duration_hours = ($_POST['duration_hours'] ?? '') !== '' ? (int)$_POST['duration_hours'] : 0;
   $duration_minutes = ($_POST['duration_minutes'] ?? '') !== '' ? (int)$_POST['duration_minutes'] : 0;

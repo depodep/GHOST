@@ -6,13 +6,11 @@ require_once 'header.php';
 $pdo = getDB();
 $uid = $_SESSION['user_id'];
 $user = getCurrentUser();
-$incubators = $pdo->prepare("SELECT i.*, ts.target_temp, ts.target_humidity, ts.turning_interval, b.batch_name, b.status AS batch_status, b.start_date, b.expected_hatch_date
-    FROM incubators i
-    LEFT JOIN temperature_settings ts ON i.id = ts.incubator_id
-    JOIN batches b ON b.incubator_id = i.id
-    WHERE b.user_id = ?
-    GROUP BY i.id
-    ORDER BY i.name ASC");
+$incubators = $pdo->prepare("SELECT i.*, ts.target_temp, ts.target_humidity, ts.turning_interval
+  FROM incubators i
+  LEFT JOIN temperature_settings ts ON i.id = ts.incubator_id
+  WHERE i.id IN (SELECT incubator_id FROM batches WHERE user_id = ?)
+  ORDER BY i.name ASC");
 $incubators->execute([$uid]);
 $incubators = $incubators->fetchAll();
 ?>
@@ -70,7 +68,7 @@ $incubators = $incubators->fetchAll();
                   Ongoing session detected. Relay testing is locked until the session ends.
                 </div>
 
-                <div class="d-grid gap-2">
+                <div id="relayControls-<?= (int)$inc['id'] ?>" class="d-grid gap-2" style="display:none;">
                   <div class="d-flex flex-wrap gap-2">
                     <button class="btn-ghost btn-ghost-sm relay-btn relay-toggle" id="relayToggle-heater-<?= (int)$inc['id'] ?>" data-incubator="<?= (int)$inc['id'] ?>" data-relay="heater">Heater ON</button>
                     <button class="btn-ghost btn-ghost-sm relay-btn relay-toggle" id="relayToggle-heater_fan-<?= (int)$inc['id'] ?>" data-incubator="<?= (int)$inc['id'] ?>" data-relay="heater_fan">Heater Fan ON</button>
@@ -79,6 +77,7 @@ $incubators = $incubators->fetchAll();
                   </div>
                   <div style="font-size:.75rem;color:var(--ghost-muted);">These are test controls for the assigned incubator only.</div>
                 </div>
+                <div id="relayIdleNote-<?= (int)$inc['id'] ?>" style="display:block;font-size:.78rem;color:var(--ghost-muted);">Relay testing is hidden while the incubator is idle.</div>
               </div>
             </div>
           </div>
@@ -97,6 +96,13 @@ function setRelayButtonsDisabled(incubatorId, disabled) {
   buttons.forEach(btn => btn.disabled = disabled);
   const note = document.getElementById(`relayLockNote-${incubatorId}`);
   if (note) note.style.display = disabled ? 'block' : 'none';
+}
+
+function setRelayControlsVisible(incubatorId, visible) {
+  const controls = document.getElementById(`relayControls-${incubatorId}`);
+  const idleNote = document.getElementById(`relayIdleNote-${incubatorId}`);
+  if (controls) controls.style.display = visible ? 'grid' : 'none';
+  if (idleNote) idleNote.style.display = visible ? 'none' : 'block';
 }
 
 function setRelayStateLabel(incubatorId, relay, state) {
@@ -160,13 +166,16 @@ function applyRelayCommandState(incubatorId, relay, state) {
 function refreshRelayCards() {
   document.querySelectorAll('.relay-btn').forEach(btn => btn.disabled = true);
   const incubatorIds = Array.from(new Set(Array.from(document.querySelectorAll('.relay-btn')).map(btn => btn.dataset.incubator)));
-  incubatorIds.forEach(function(id) {
+    incubatorIds.forEach(function(id) {
     $.post('../ajax/hardware_api.php', {
       action: 'get_live_status',
       incubator_id: id,
       token: 'ghost_hw_secret_2024'
     }, function(res) {
-      if (!res || !res.success) return;
+      if (!res || !res.success) {
+        console.warn('get_live_status failed for', id, res);
+        return;
+      }
       const running = res.session_status === 'running';
       relaySessionState[id] = {
         sessionStatus: res.session_status || 'idle',
@@ -177,6 +186,7 @@ function refreshRelayCards() {
         badge.className = running ? 'badge-active' : 'badge-idle';
         badge.textContent = running ? 'ONGOING SESSION' : 'READY';
       }
+      setRelayControlsVisible(id, running);
       setRelayButtonsFromState(id, {
         heater: !!(res.heater_on || res.heater_1_status || res.heater_2_status),
         fan: !!res.heater_fan_status,
@@ -184,14 +194,17 @@ function refreshRelayCards() {
         exhaust: !!res.exhaust_status
       });
       setRelayButtonsDisabled(id, running);
-    }, 'json').fail(function() {
+    }, 'json').fail(function(xhr, status, err) {
+      console.error('refreshRelayCards AJAX error', id, status, err, xhr && xhr.responseText);
       const badge = document.getElementById(`sessionBadge-${id}`);
       if (badge) {
         badge.className = 'badge-idle';
         badge.textContent = 'OFFLINE';
       }
+      setRelayControlsVisible(id, false);
       setRelayButtonsFromState(id, { heater: false, fan: false, swing: false, exhaust: false });
       setRelayButtonsDisabled(id, true);
+      try { showToast('Unable to contact server for relay state', 'error'); } catch(e){}
     });
   });
 }
@@ -222,7 +235,9 @@ function sendRelayTest(incubatorId, relay, state) {
       showToast('Command sent: ' + relay.replace(/_/g, ' ') + ' ' + (state ? 'ON' : 'OFF'));
       setTimeout(refreshRelayCards, 1500);
     } else {
-      showToast((res && res.message) ? res.message : 'Command failed', 'error');
+      const errMsg = (res && (res.error || res.message)) ? (res.error || res.message) : 'Command failed';
+      showToast(errMsg, 'error');
+      console.warn('test_mode_set_relay failed', res);
       setTimeout(refreshRelayCards, 500);
     }
   }, 'json').fail(function() {

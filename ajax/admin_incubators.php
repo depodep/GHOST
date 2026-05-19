@@ -14,7 +14,10 @@ if($action === 'add'){
   // Upsert temperature_settings with provided values
   $tt  = (float)($_POST['target_temp']      ?? 37.50);
   $th  = (float)($_POST['target_humidity']  ?? 55.00);
-  $ti  = (int)  ($_POST['turning_interval'] ?? 8);
+  $ti  = (float)($_POST['turning_interval'] ?? 8.0);
+   if ($ti < 0.01 || $ti > 24) {
+     jsonResponse(['success'=>false,'message'=>'Invalid turning interval.']);
+   }
   $pdo->prepare(
     "INSERT INTO temperature_settings (incubator_id,target_temp,min_temp,max_temp,target_humidity,min_humidity,max_humidity,turning_interval)
      VALUES (?,?,?,?,?,?,?,?)
@@ -34,7 +37,10 @@ if($action === 'update'){
   if(isset($_POST['target_temp']) && $_POST['target_temp'] !== ''){
     $tt  = (float)$_POST['target_temp'];
     $th  = (float)($_POST['target_humidity']  ?? 55.00);
-    $ti  = (int)  ($_POST['turning_interval'] ?? 8);
+    $ti  = (float)($_POST['turning_interval'] ?? 8.0);
+     if ($ti < 0.01 || $ti > 24) {
+       jsonResponse(['success'=>false,'message'=>'Invalid turning interval.']);
+     }
     $pdo->prepare(
       "INSERT INTO temperature_settings (incubator_id,target_temp,min_temp,max_temp,target_humidity,min_humidity,max_humidity,turning_interval)
        VALUES (?,?,?,?,?,?,?,?)

@@ -164,7 +164,7 @@ float savedMaxTemp      = 38.00;
 float savedTargetHum    = 55.00;
 float savedMinHum       = 50.00;
 float savedMaxHum       = 60.00;
-int   savedTurningInt   = 8;
+float savedTurningInt   = 8.0f;
 int   savedSwingDurationSec = 30;
 bool  turningLockdownActive = false;
 int   turningLockdownDaysRemaining = -1;
@@ -530,8 +530,8 @@ void loop() {
         }
 
         // ── Auto-start swing on schedule (every savedTurningInt hours) ──
-        if (!swingManualOverride && !eggswingOn && savedTurningInt > 0 && !isTurningLockdownActive()) {
-            const unsigned long intervalMs = (unsigned long)savedTurningInt * 3600UL * 1000UL;
+        if (!swingManualOverride && !eggswingOn && savedTurningInt > 0.0f && !isTurningLockdownActive()) {
+            const unsigned long intervalMs = (unsigned long)(savedTurningInt * 3600.0f * 1000.0f);
             if (lastSwingScheduledAt == 0) {
                 lastSwingScheduledAt = now;
             } else if (now - lastSwingScheduledAt >= intervalMs) {
@@ -991,7 +991,7 @@ void fetchParametersFromServer() {
             float newTargetHum = savedTargetHum;
             float newMinHum = savedMinHum;
             float newMaxHum = savedMaxHum;
-            int newTurningInt = savedTurningInt;
+            float newTurningInt = savedTurningInt;
             int newSwingDurationSec = savedSwingDurationSec;
             bool newTurningLockdownActive = turningLockdownActive;
             int newTurningLockdownDaysRemaining = turningLockdownDaysRemaining;
@@ -1009,7 +1009,7 @@ void fetchParametersFromServer() {
             else if (doc.containsKey("min_hum")) newMinHum = doc["min_hum"];
             if (doc.containsKey("max_humidity")) newMaxHum = doc["max_humidity"];
             else if (doc.containsKey("max_hum")) newMaxHum = doc["max_hum"];
-            if (doc.containsKey("turning_interval")) newTurningInt = doc["turning_interval"];
+            if (doc.containsKey("turning_interval")) newTurningInt = doc["turning_interval"].as<float>();
             if (doc.containsKey("turning_lockdown_active")) newTurningLockdownActive = doc["turning_lockdown_active"];
             if (doc.containsKey("turning_lockdown_days_remaining")) newTurningLockdownDaysRemaining = doc["turning_lockdown_days_remaining"];
             if (doc.containsKey("swing_duration_sec")) {
@@ -1065,7 +1065,7 @@ void fetchParametersFromServer() {
                 fabsf(savedTargetHum - newTargetHum) > 0.001f ||
                 fabsf(savedMinHum - newMinHum) > 0.001f ||
                 fabsf(savedMaxHum - newMaxHum) > 0.001f ||
-                savedTurningInt != newTurningInt ||
+                fabsf(savedTurningInt - newTurningInt) > 0.001f ||
                 savedSwingDurationSec != newSwingDurationSec ||
                 turningLockdownActive != newTurningLockdownActive ||
                 turningLockdownDaysRemaining != newTurningLockdownDaysRemaining ||
@@ -1101,6 +1101,10 @@ void fetchParametersFromServer() {
             } else if (sessionMode == MODE_IDLE) {
                 sessionStartedAt = 0;
                 sessionEndsAt = 0;
+                setHeater(false);
+                setSwing(false);
+                setHeaterFan(false);
+                setExhaust(false);
                 Serial.println(F("[Mode] Switched to IDLE (no active session)"));
             }
 
@@ -1198,7 +1202,7 @@ void loadParametersFromEEPROM() {
 void printSavedParameters() {
     Serial.printf("[Parameters] Target:%.1f°C (%.1f-%.1f)\n", savedTargetTemp, savedMinTemp, savedMaxTemp);
     Serial.printf("[Parameters] Humidity:%.1f%% (%.1f-%.1f)\n", savedTargetHum, savedMinHum, savedMaxHum);
-    Serial.printf("[Parameters] Turning interval: %d hours\n", savedTurningInt);
+            Serial.printf("[Parameters] Turning interval: %.2f hours\n", savedTurningInt);
     Serial.printf("[Parameters] Swing duration: %d sec\n", savedSwingDurationSec);
     Serial.printf("[Parameters] Session: %s (ID:%d)\n", sessionName, sessionId);
 }

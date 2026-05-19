@@ -40,6 +40,8 @@ $schedStmt = $pdo->prepare(
      LEFT JOIN batches b ON s.batch_id=b.id
      WHERE (b.user_id=? OR s.created_by_id=?)
        AND s.scheduled_date >= CURDATE()
+       AND NOT (s.scheduled_date = CURDATE() AND s.scheduled_time < CURTIME())
+       AND s.status = 'pending'
      ORDER BY s.scheduled_date, s.scheduled_time LIMIT 6");
 $schedStmt->execute([$uid, $uid]); $schedules = $schedStmt->fetchAll();
 
@@ -294,6 +296,32 @@ $tempLogs = array_reverse($pdo->query(
     transition: all .3s ease;
 }
 
+.control-buttons button.btn-success-ghost {
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+    border-color: transparent;
+    color: white;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+}
+
+.control-buttons button.btn-ghost {
+    background: var(--ghost-gradient);
+    border-color: transparent;
+    color: white;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+}
+
+.control-buttons button.btn-danger-ghost {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.25);
+    color: #f87171;
+}
+
+.control-buttons button.btn-outline-ghost {
+    background: transparent;
+    border-color: var(--ghost-border);
+    color: var(--ghost-muted);
+}
+
 .control-buttons button:hover:not(:disabled) {
     background: var(--ghost-blue);
     border-color: var(--ghost-blue);
@@ -354,14 +382,16 @@ $tempLogs = array_reverse($pdo->query(
                 </div>
 
                 <div class="control-buttons">
-                    <button id="btnStart" onclick="startSessionQuick()" disabled title="Start incubation session">
+                    <button id="btnStart" class="btn-success-ghost" onclick="startSessionQuick()"
+                        title="Start incubation session">
                         <i class="fas fa-play"></i> Start
                     </button>
                     <button id="btnStop" class="btn-danger-ghost" onclick="stopSessionQuick()" disabled
                         title="Stop incubation session">
                         <i class="fas fa-stop"></i> Stop
                     </button>
-                    <button id="btnSetParams" onclick="openIncubateModal()" disabled title="Set incubation parameters">
+                    <button id="btnSetParams" class="btn-ghost" onclick="openIncubateModal()" disabled
+                        title="Set incubation parameters">
                         <i class="fas fa-sliders-h"></i> Set Params
                     </button>
                 </div>
@@ -666,8 +696,8 @@ $tempLogs = array_reverse($pdo->query(
                             <div class="row g-2">
                                 <div class="col-12">
                                     <label class="form-label-ghost">Run for (seconds)</label>
-                                    <input type="number" min="5" max="300" class="form-control-ghost" id="sw_duration"
-                                        value="30"
+                                    <input type="number" min="5" max="300" step="1" class="form-control-ghost"
+                                        id="sw_duration" value="30"
                                         style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:#22c55e;text-align:center;">
                                     <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended:
                                         30–60 seconds per cycle. Max 300 s.</div>
@@ -690,11 +720,13 @@ $tempLogs = array_reverse($pdo->query(
 
                                 <div class="col-12 mt-2">
                                     <label class="form-label-ghost">Turn eggs every (hours)</label>
-                                    <input type="number" min="1" max="24" class="form-control-ghost" id="sw_interval"
-                                        value="8"
+                                    <input type="number" min="0.01" max="24" step="0.01" class="form-control-ghost"
+                                        id="sw_interval" value="8"
                                         style="font-size:1.4rem;font-family:'Bebas Neue',sans-serif;color:white;text-align:center;">
                                     <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">Recommended:
                                         3–8 hours. Common default: 4 hours.</div>
+                                    <div id="sw_interval_preview"
+                                        style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;"></div>
                                     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
                                         <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;"
                                             onclick="setTurningIntervalPreset(3)">3 h</button>
@@ -705,7 +737,8 @@ $tempLogs = array_reverse($pdo->query(
                                         <button class="btn-outline-ghost" style="font-size:.78rem;padding:5px 14px;"
                                             onclick="setTurningIntervalPreset(8)">8 h</button>
                                     </div>
-                                    <div style="font-size:.72rem;color:var(--ghost-muted);margin-top:8px;">Egg turning pauses automatically during the final 3 days before hatch.</div>
+                                    <div style="font-size:.72rem;color:var(--ghost-muted);margin-top:8px;">Egg turning
+                                        pauses automatically during the final 3 days before hatch.</div>
                                 </div>
                             </div>
                         </div>
@@ -730,6 +763,7 @@ $tempLogs = array_reverse($pdo->query(
 </div>
 
 <script>
+console.log('[SCRIPT] Dashboard script loaded');
 // Store chart instance globally for updates
 let tempChartInstance = null;
 let liveSessionState = {
@@ -845,6 +879,7 @@ window.addEventListener('load', function() {
 // Function to refresh temperature chart with latest data
 function refreshTemperatureChart() {
     const incId = document.getElementById('qc_incubator_id').value;
+    console.log('[startSessionQuick] START - incubator_id:', incId);
     if (!incId || !tempChartInstance) return;
 
     $.get('../ajax/get_temperature_logs.php', {
@@ -866,6 +901,112 @@ function refreshTemperatureChart() {
 function selectedOpt() {
     const sel = document.getElementById('qc_incubator_id');
     return sel.options[sel.selectedIndex];
+}
+
+function getIncubationDraftKey(incId) {
+    return incId ? `ghost:incubation-modal-draft:${incId}` : null;
+}
+
+function readIncubationDraft(incId) {
+    const key = getIncubationDraftKey(incId);
+    if (!key || !window.localStorage) return null;
+
+    try {
+        return JSON.parse(localStorage.getItem(key) || 'null');
+    } catch (err) {
+        return null;
+    }
+}
+
+function writeIncubationDraft(incId, values) {
+    const key = getIncubationDraftKey(incId);
+    if (!key || !window.localStorage || !values) return;
+
+    try {
+        localStorage.setItem(key, JSON.stringify(values));
+    } catch (err) {
+        // Ignore storage quota or privacy-mode failures.
+    }
+}
+
+function collectIncubationDraftValues() {
+    const incId = document.getElementById('qc_incubator_id').value;
+    if (!incId) return null;
+
+    return {
+        targetT: document.getElementById('inc_target_temp').value,
+        minT: document.getElementById('inc_min_temp').value,
+        maxT: document.getElementById('inc_max_temp').value,
+        targetH: document.getElementById('inc_target_hum').value,
+        minH: document.getElementById('inc_min_hum').value,
+        maxH: document.getElementById('inc_max_hum').value,
+        durationDays: document.getElementById('inc_duration_days').value,
+        durationHours: document.getElementById('inc_duration_hours').value,
+        durationMinutes: document.getElementById('inc_duration_minutes').value,
+        durationSeconds: document.getElementById('inc_duration_seconds').value,
+        swingDuration: document.getElementById('sw_duration').value,
+        interval: document.getElementById('sw_interval').value
+    };
+}
+
+function persistIncubationDraft() {
+    const incId = document.getElementById('qc_incubator_id').value;
+    if (!incId) return;
+    writeIncubationDraft(incId, collectIncubationDraftValues());
+}
+
+function applyIncubationDraft(incId) {
+    const draft = readIncubationDraft(incId);
+    if (!draft) return;
+
+    const assignments = {
+        inc_target_temp: draft.targetT,
+        inc_min_temp: draft.minT,
+        inc_max_temp: draft.maxT,
+        inc_target_hum: draft.targetH,
+        inc_min_hum: draft.minH,
+        inc_max_hum: draft.maxH,
+        inc_duration_days: draft.durationDays,
+        inc_duration_hours: draft.durationHours,
+        inc_duration_minutes: draft.durationMinutes,
+        inc_duration_seconds: draft.durationSeconds,
+        sw_duration: draft.swingDuration,
+        sw_interval: draft.interval
+    };
+
+    Object.entries(assignments).forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (el && value !== null && value !== undefined && value !== '') {
+            el.value = value;
+        }
+    });
+
+    const days = parseInt(draft.durationDays, 10) || 0;
+    const hours = parseInt(draft.durationHours, 10) || 0;
+    const minutes = parseInt(draft.durationMinutes, 10) || 0;
+    const seconds = parseInt(draft.durationSeconds, 10) || 0;
+    window.lastSessionDurationSec = (days * 86400) + (hours * 3600) + (minutes * 60) + seconds;
+}
+
+function syncSelectedOptSettings(settings) {
+    const opt = selectedOpt();
+    if (!opt || !settings) return;
+
+    const pairs = {
+        target: settings.target_temp ?? settings.targetT,
+        min: settings.min_temp ?? settings.minT,
+        max: settings.max_temp ?? settings.maxT,
+        th: settings.target_humidity ?? settings.targetH,
+        thmin: settings.min_humidity ?? settings.minH,
+        thmax: settings.max_humidity ?? settings.maxH,
+        interval: settings.turning_interval ?? settings.interval
+    };
+
+    Object.entries(pairs).forEach(([key, value]) => {
+        if (value !== null && value !== undefined && value !== '') {
+            opt.dataset[key] = value;
+        }
+    });
 }
 
 function onIncubatorChange() {
@@ -898,7 +1039,7 @@ function getIncubationFormValues() {
         minH: parseFloat(document.getElementById('inc_min_hum').value),
         maxH: parseFloat(document.getElementById('inc_max_hum').value),
         duration: parseInt(document.getElementById('sw_duration').value) || 30,
-        interval: parseInt(document.getElementById('sw_interval').value) || 8,
+        interval: parseFloat(document.getElementById('sw_interval').value) || 8,
         sessionDurationSec: sessionDurationSec,
         sessionDurationDays: durationDays,
         sessionDurationHours: durationHours,
@@ -909,7 +1050,25 @@ function getIncubationFormValues() {
 
 function setTurningIntervalPreset(hours) {
     const input = document.getElementById('sw_interval');
-    if (input) input.value = hours;
+    if (input) {
+        input.value = hours;
+        updateIntervalPreview('sw_interval', 'sw_interval_preview');
+    }
+}
+
+function formatIntervalMinutes(hours) {
+    if (!Number.isFinite(hours) || hours <= 0) return '';
+    const minutes = hours * 60;
+    const rounded = (Math.round(minutes * 10) / 10).toFixed(minutes % 1 === 0 ? 0 : 1);
+    return `≈ ${rounded} min`;
+}
+
+function updateIntervalPreview(inputId, outputId) {
+    const input = document.getElementById(inputId);
+    const output = document.getElementById(outputId);
+    if (!input || !output) return;
+    const hours = parseFloat(input.value);
+    output.textContent = formatIntervalMinutes(hours);
 }
 
 function saveIncubationSettings(startSession) {
@@ -927,7 +1086,7 @@ function saveIncubationSettings(startSession) {
         alert('Swing duration must be between 5 and 300 seconds.');
         return;
     }
-    if (!Number.isFinite(values.interval) || values.interval < 1) {
+    if (!Number.isFinite(values.interval) || values.interval < 0.01) {
         alert('Turning interval too short.');
         return;
     }
@@ -958,16 +1117,8 @@ function saveIncubationSettings(startSession) {
             return;
         }
 
-        const opt = selectedOpt();
-        if (opt) {
-            opt.dataset.target = values.targetT;
-            opt.dataset.min = values.minT;
-            opt.dataset.max = values.maxT;
-            opt.dataset.th = values.targetH;
-            opt.dataset.thmin = values.minH;
-            opt.dataset.thmax = values.maxH;
-            opt.dataset.interval = values.interval;
-        }
+        persistIncubationDraft();
+        syncSelectedOptSettings(values);
         window.lastSessionDurationSec = values.sessionDurationSec;
 
         $.post('../ajax/hardware_api.php', {
@@ -1039,17 +1190,52 @@ function openIncubateModal() {
     document.getElementById('inc_duration_seconds').value = 0;
     document.getElementById('sw_duration').value = 30;
     document.getElementById('sw_interval').value = opt.dataset.interval || 8;
+    updateIntervalPreview('sw_interval', 'sw_interval_preview');
     window.lastSessionDurationSec = (21 * 86400);
+
+    applyIncubationDraft(opt.value);
 
     new bootstrap.Modal(document.getElementById('incubateModal')).show();
 }
 
 // Auto-adjust min/max to ±3 when target temperature/humidity inputs change
-;(function(){
+;
+(function() {
     const tIn = document.getElementById('inc_target_temp');
     const hIn = document.getElementById('inc_target_hum');
-    if (tIn) tIn.addEventListener('input', function(){ const v = parseFloat(this.value); if (!isNaN(v)) { const min = (v - 3).toFixed(1); const max = (v + 3).toFixed(1); const elMin = document.getElementById('inc_min_temp'); const elMax = document.getElementById('inc_max_temp'); if(elMin) elMin.value = min; if(elMax) elMax.value = max; } });
-    if (hIn) hIn.addEventListener('input', function(){ const v = parseFloat(this.value); if (!isNaN(v)) { const min = (v - 3).toFixed(1); const max = (v + 3).toFixed(1); const elMin = document.getElementById('inc_min_hum'); const elMax = document.getElementById('inc_max_hum'); if(elMin) elMin.value = min; if(elMax) elMax.value = max; } });
+    if (tIn) tIn.addEventListener('input', function() {
+        const v = parseFloat(this.value);
+        if (!isNaN(v)) {
+            const min = (v - 3).toFixed(1);
+            const max = (v + 3).toFixed(1);
+            const elMin = document.getElementById('inc_min_temp');
+            const elMax = document.getElementById('inc_max_temp');
+            if (elMin) elMin.value = min;
+            if (elMax) elMax.value = max;
+            persistIncubationDraft();
+        }
+    });
+    if (hIn) hIn.addEventListener('input', function() {
+        const v = parseFloat(this.value);
+        if (!isNaN(v)) {
+            const min = (v - 3).toFixed(1);
+            const max = (v + 3).toFixed(1);
+            const elMin = document.getElementById('inc_min_hum');
+            const elMax = document.getElementById('inc_max_hum');
+            if (elMin) elMin.value = min;
+            if (elMax) elMax.value = max;
+            persistIncubationDraft();
+        }
+    });
+    ['inc_min_temp', 'inc_max_temp', 'inc_min_hum', 'inc_max_hum', 'inc_duration_days', 'inc_duration_hours',
+        'inc_duration_minutes', 'inc_duration_seconds', 'sw_duration', 'sw_interval'
+    ].forEach(function(id) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('input', persistIncubationDraft);
+            el.addEventListener('change', persistIncubationDraft);
+        }
+    });
 })();
 
 // ══════════════════════════════════════════════════════════
@@ -1180,8 +1366,15 @@ function formatReadableDate(value) {
 
 function escapeHtml(unsafe) {
     if (!unsafe && unsafe !== 0) return '';
-    return String(unsafe).replace(/[&<>"'`]/g, function (s) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'})[s];
+    return String(unsafe).replace(/[&<>"'`]/g, function(s) {
+        return ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+            '`': '&#96;'
+        })[s];
     });
 }
 
@@ -1249,7 +1442,11 @@ function fetchLiveStatus() {
         incubator_id: incId,
         token: 'ghost_hw_secret_2024'
     }, function(res) {
-        if (!res.success) return;
+        if (!res.success) {
+            console.warn('[fetchLiveStatus] API error:', res.message || 'unknown');
+            updateControlButtons();
+            return;
+        }
         const dot = document.getElementById('hwOnlineDot');
         const lbl = document.getElementById('hwOnlineLabel');
         const isOnline = res.online;
@@ -1265,12 +1462,15 @@ function fetchLiveStatus() {
         setText('paramTargetHum', res.target_humidity ? `${parseFloat(res.target_humidity).toFixed(2)}%` : '—');
         setText('paramMinHum', res.min_humidity ? `${parseFloat(res.min_humidity).toFixed(2)}%` : '—');
         setText('paramMaxHum', res.max_humidity ? `${parseFloat(res.max_humidity).toFixed(2)}%` : '—');
-        setText('paramTurnInterval', res.turning_interval ? `${res.turning_interval}h` : '—');
+        setText('paramTurnInterval', res.turning_interval ? `${parseFloat(res.turning_interval).toFixed(2)}h` :
+            '—');
         setText('paramSwingDuration', res.swing_duration_sec ? `${res.swing_duration_sec}s` : '—');
+
+        syncSelectedOptSettings(res);
 
         const lastTurn = parseServerDate(res.last_egg_turn_at);
         const startedAt = parseServerDate(res.session_started_at);
-        const intervalHours = parseInt(res.turning_interval, 10);
+        const intervalHours = parseFloat(res.turning_interval);
         if (lastTurn && !isNaN(lastTurn.getTime())) {
             const secondsAgo = Math.max(0, Math.floor((Date.now() - lastTurn.getTime()) / 1000));
             setText('paramLastSwing', formatRelativeSeconds(secondsAgo));
@@ -1389,7 +1589,10 @@ function fetchLiveStatus() {
         liveSessionState.lastServerSync = res.last_server_sync || res.last_seen || null;
         updateSessionCountdown();
         updateControlButtons();
-    }, 'json');
+    }, 'json').fail(function(xhr, textStatus, errorThrown) {
+        console.error('[fetchLiveStatus] AJAX failed:', textStatus, errorThrown, xhr.responseText);
+        updateControlButtons();
+    });
 }
 
 function formatCountdown(totalSeconds) {
@@ -1517,20 +1720,28 @@ const startConfirmModalHtml = `
         <div class="modal-content modal-ghost">
             <div class="modal-header">
                 <div>
-                    <h5 class="modal-title" id="startConfirmTitle">Start session</h5>
-                    <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;">Confirm this action</div>
+                    <h5 class="modal-title" id="startConfirmTitle">Start Session</h5>
+                    <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;" id="startConfirmSubtitle">Configure session details</div>
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" style="padding:24px;">
-                <div id="startConfirmBody" style="white-space:pre-line;margin-bottom:14px;">Are you sure?</div>
-                <label class="form-label-ghost" for="startEggCount">Egg Count</label>
-                <input type="number" id="startEggCount" class="form-control-ghost" placeholder="e.g. 50" min="1" />
-                <div id="startEggError" style="display:none;color:#f87171;font-size:.78rem;margin-top:6px;">Egg count is required.</div>
+                <div id="startConfirmBody" style="white-space:pre-line;margin-bottom:16px;">Are you sure?</div>
+                <div style="margin-bottom:16px;">
+                    <label class="form-label-ghost" for="startEggCount">Egg Count</label>
+                    <input type="number" id="startEggCount" class="form-control-ghost" placeholder="e.g. 50" min="1" />
+                    <div id="startEggError" style="display:none;color:#f87171;font-size:.78rem;margin-top:6px;">Egg count is required.</div>
+                </div>
+                <div id="scheduleDatetimeSection" style="display:none;">
+                    <label class="form-label-ghost" for="scheduledStartDateTime">Scheduled Start Time</label>
+                    <input type="datetime-local" id="scheduledStartDateTime" class="form-control-ghost" />
+                    <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;">Select when you want the session to begin</div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button>
-                <button class="btn-ghost" id="startConfirmOk">Confirm</button>
+                <button class="btn-success-ghost" id="startNowBtn">▶ Start Now</button>
+                <button class="btn-ghost" id="startScheduleBtn">⏰ Schedule for Later</button>
             </div>
         </div>
     </div>
@@ -1575,21 +1786,51 @@ function showConfirm(title, message, onConfirm) {
 
 function showStartConfirm(message, defaultEggCount, onConfirm) {
     const el = document.getElementById('startConfirmModal');
-    if (!el) return onConfirm(defaultEggCount || 0);
+    if (!el) return onConfirm(defaultEggCount || 0, null);
     const body = document.getElementById('startConfirmBody');
     const input = document.getElementById('startEggCount');
+    const schedInput = document.getElementById('scheduledStartDateTime');
+    const schedSection = document.getElementById('scheduleDatetimeSection');
+    const subtitle = document.getElementById('startConfirmSubtitle');
     const err = document.getElementById('startEggError');
-    const ok = document.getElementById('startConfirmOk');
+    const startNowBtn = document.getElementById('startNowBtn');
+    const startScheduleBtn = document.getElementById('startScheduleBtn');
+
     let baseMessage = message;
     if (body) body.textContent = baseMessage;
     if (input) input.value = defaultEggCount ? String(defaultEggCount) : '';
     if (err) err.style.display = 'none';
+
+    // Show clear instruction if egg count is not pre-filled
+    if (!defaultEggCount && subtitle) {
+        subtitle.textContent = '⚠️ Enter the number of eggs to continue';
+        subtitle.style.color = 'var(--ghost-warning, #fbbf24)';
+    }
+
+    // Reset button states
+    if (schedSection) schedSection.style.display = 'none';
+    if (startNowBtn) startNowBtn.classList.remove('disabled');
+    if (startScheduleBtn) startScheduleBtn.classList.remove('active');
+
+    // Set default scheduled start time to NOW (current date/time)
+    if (schedInput) {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hour = String(now.getHours()).padStart(2, '0');
+        const minute = String(now.getMinutes()).padStart(2, '0');
+        schedInput.value = `${year}-${month}-${day}T${hour}:${minute}`;
+    }
 
     function syncMessage() {
         if (!body) return;
         const val = input ? parseInt(input.value, 10) : 0;
         const count = val && val > 0 ? val : (defaultEggCount || 0);
         body.textContent = baseMessage.replace(/Egg Count:\s*\d+\s*eggs/, `Egg Count: ${count} eggs`);
+        if (err && val && val > 0) {
+            err.style.display = 'none';
+        }
     }
     if (input) {
         input.addEventListener('input', syncMessage);
@@ -1607,22 +1848,57 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
     if (input) input.focus();
 
     function cleanup() {
-        ok.removeEventListener('click', okHandler);
+        startNowBtn.removeEventListener('click', startNowHandler);
+        if (startScheduleBtn) startScheduleBtn.removeEventListener('click', goToSchedulePageHandler);
         if (input) input.removeEventListener('input', syncMessage);
     }
 
-    function okHandler() {
+    function getEggCount() {
         const val = input ? parseInt(input.value, 10) : 0;
         if (!val || val < 1) {
             if (err) err.style.display = 'block';
             if (input) input.focus();
-            return;
+            return null;
         }
+        if (err) err.style.display = 'none';
+        return val;
+    }
+
+    function startNowHandler() {
+        const eggCount = getEggCount();
+        if (!eggCount) return;
+
         cleanup();
         modal.hide();
-        if (typeof onConfirm === 'function') onConfirm(val);
+        // Start immediately - set datetime to now
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hour = String(now.getHours()).padStart(2, '0');
+        const minute = String(now.getMinutes()).padStart(2, '0');
+        const scheduledDateTime = `${year}-${month}-${day} ${hour}:${minute}`;
+        if (typeof onConfirm === 'function') onConfirm(eggCount, scheduledDateTime);
     }
-    ok.addEventListener('click', okHandler);
+
+    startNowBtn.addEventListener('click', startNowHandler);
+
+    function goToSchedulePageHandler() {
+        const eggCount = getEggCount();
+        if (!eggCount) return;
+
+        cleanup();
+        modal.hide();
+
+        const url = new URL('schedule.php', window.location.href);
+        if (window.currentIncubatorId) {
+            url.searchParams.set('incubator_id', String(window.currentIncubatorId));
+        }
+        url.searchParams.set('egg_count', String(eggCount));
+        window.location.href = url.toString();
+    }
+
+    startScheduleBtn.addEventListener('click', goToSchedulePageHandler);
 }
 
 // Quick session controls and simple pulse animation (user)
@@ -1666,16 +1942,18 @@ function updateControlButtons() {
     const sessionParamsCard = document.getElementById('sessionParamsCard');
 
     if (btnStart) {
-        btnStart.disabled = !deviceOnline || isSessionRunning;
+        // Enable Start button if no session is currently running
+        // (device may be offline but we still allow trying to start)
+        btnStart.disabled = isSessionRunning;
     }
     if (btnStop) {
-        btnStop.disabled = !deviceOnline || !isSessionRunning;
+        btnStop.disabled = !isSessionRunning;
     }
     if (btnSetParams) {
         btnSetParams.disabled = false;
     }
     if (btnStopTop) {
-        btnStopTop.disabled = !deviceOnline || !isSessionRunning;
+        btnStopTop.disabled = !isSessionRunning;
     }
     if (sessionParamsCard) {
         sessionParamsCard.style.display = isSessionRunning ? 'block' : 'none';
@@ -1705,43 +1983,58 @@ function startSessionQuick() {
     const incId = document.getElementById('qc_incubator_id').value;
     if (!incId) {
         showFb('No incubator selected', 'warning');
-        return;
-    }
-    if (!liveSessionState.deviceOnline) {
-        showFb('Device is offline. Start is disabled until the incubator reconnects.', 'warning');
+        console.error('[startSessionQuick] ERROR: No incubator selected');
         return;
     }
 
     // Check if a session is already running
     if (liveSessionState.status === 'running') {
         showFb('❌ A session is already running on this incubator. Stop it first before starting a new one.', 'danger');
+        console.error('[startSessionQuick] ERROR: Session already running');
         return;
     }
 
     const durationSec = parseInt(window.lastSessionDurationSec || (21 * 86400), 10) || (21 * 86400);
+    console.log('[startSessionQuick] Duration (sec):', durationSec);
 
-    function numOrFallback(value, fallback) {
-        const parsed = parseFloat(value);
-        if (!isNaN(parsed)) return parsed;
-        return fallback;
+    function numOrFallback() {
+        for (let i = 0; i < arguments.length; i++) {
+            const parsed = parseFloat(arguments[i]);
+            if (!isNaN(parsed)) return parsed;
+        }
+        return null;
+    }
+
+    function formatLocalDateTime(value) {
+        if (!value) return '—';
+        const d = value instanceof Date ? value : new Date(value);
+        if (isNaN(d.getTime())) return '—';
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hour = String(d.getHours()).padStart(2, '0');
+        const minute = String(d.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hour}:${minute}`;
     }
 
     function buildConfirmMessage(source, eggCount) {
-        const localTargetT = numOrFallback(sel && sel.dataset ? sel.dataset.target : null, 37.5);
-        const localMinT = numOrFallback(sel && sel.dataset ? sel.dataset.min : null, 37.0);
-        const localMaxT = numOrFallback(sel && sel.dataset ? sel.dataset.max : null, 38.0);
-        const localTargetH = numOrFallback(sel && sel.dataset ? sel.dataset.th : null, 55.0);
-        const localMinH = numOrFallback(sel && sel.dataset ? sel.dataset.thmin : null, 50.0);
-        const localMaxH = numOrFallback(sel && sel.dataset ? sel.dataset.thmax : null, 60.0);
-        const localInterval = parseInt((sel && sel.dataset && sel.dataset.interval) ? sel.dataset.interval : '8', 10) ||
-            8;
+        const opt = selectedOpt();
+        const dataset = opt && opt.dataset ? opt.dataset : {};
 
-        const targetT = numOrFallback(source ? source.target_temp : null, localTargetT);
-        const minT = numOrFallback(source ? source.min_temp : null, localMinT);
-        const maxT = numOrFallback(source ? source.max_temp : null, localMaxT);
+        const localTargetT = numOrFallback(dataset.target, 37.5);
+        const localMinT = numOrFallback(dataset.min, 37.0);
+        const localMaxT = numOrFallback(dataset.max, 38.0);
+        const localTargetH = numOrFallback(dataset.th, 55.0);
+        const localMinH = numOrFallback(dataset.thmin, 50.0);
+        const localMaxH = numOrFallback(dataset.thmax, 60.0);
+        const localInterval = parseInt(dataset.interval || '8', 10) || 8;
 
-            // Conflict modal HTML: shows conflicting scheduled items and offers Adjust or Proceed
-            const conflictModalHtml = `
+        const targetT = numOrFallback(dataset.target, source ? source.target_temp : null, localTargetT) ?? localTargetT;
+        const minT = numOrFallback(dataset.min, source ? source.min_temp : null, localMinT) ?? localMinT;
+        const maxT = numOrFallback(dataset.max, source ? source.max_temp : null, localMaxT) ?? localMaxT;
+
+        // Conflict modal HTML: shows conflicting scheduled items and offers Adjust or Proceed
+        const conflictModalHtml = `
             <div class="modal fade" id="conflictModal" tabindex="-1">
                 <div class="modal-dialog modal-dialog-centered" style="max-width:720px;">
                     <div class="modal-content modal-ghost">
@@ -1763,32 +2056,46 @@ function startSessionQuick() {
                     </div>
                 </div>
             </div>`;
-            (function(){ if(!document.getElementById('conflictModal')) document.body.insertAdjacentHTML('beforeend', conflictModalHtml); })();
-        const targetH = numOrFallback(source ? source.target_humidity : null, localTargetH);
-        const minH = numOrFallback(source ? source.min_humidity : null, localMinH);
-        const maxH = numOrFallback(source ? source.max_humidity : null, localMaxH);
-        const interval = parseInt(source && source.turning_interval ? source.turning_interval : localInterval, 10) ||
-            localInterval;
+        (function() {
+            if (!document.getElementById('conflictModal')) document.body.insertAdjacentHTML('beforeend',
+                conflictModalHtml);
+        })();
+        const targetH = numOrFallback(dataset.th, source ? source.target_humidity : null, localTargetH) ?? localTargetH;
+        const minH = numOrFallback(dataset.thmin, source ? source.min_humidity : null, localMinH) ?? localMinH;
+        const maxH = numOrFallback(dataset.thmax, source ? source.max_humidity : null, localMaxH) ?? localMaxH;
+        const interval = parseFloat(dataset.interval || (source && source.turning_interval ? source.turning_interval :
+            localInterval)) || localInterval;
         const duration = parseInt(source && source.swing_duration_sec ? source.swing_duration_sec : 30, 10) || 30;
 
-        const startedText = liveSessionState.startedAt ? formatDisplayTime(liveSessionState.startedAt) : '—';
-        const endsText = liveSessionState.endsAt ? formatDisplayTime(liveSessionState.endsAt) : '—';
+        const now = new Date();
+        const startPreview = liveSessionState.startedAt ? formatDisplayTime(liveSessionState.startedAt) :
+            formatLocalDateTime(now);
+        const endPreview = liveSessionState.endsAt ? formatDisplayTime(liveSessionState.endsAt) : formatLocalDateTime(
+            new Date(now.getTime() + (durationSec * 1000)));
 
         return (
             'Start incubation now with these settings?\n\n' +
             'Temp: ' + targetT.toFixed(2) + '°C (min ' + minT.toFixed(2) + ', max ' + maxT.toFixed(2) + ')\n' +
             'Humidity: ' + targetH.toFixed(2) + '% (min ' + minH.toFixed(2) + ', max ' + maxH.toFixed(2) + ')\n' +
             'Egg Count: ' + (eggCount || 0) + ' eggs\n' +
-            'Start time: ' + startedText + '\n' +
-            'End time: ' + endsText + '\n' +
             'Session duration: ' + formatDuration(durationSec) + '\n' +
             'Swing duration: ' + duration + 's\n' +
-            'Turn interval: ' + interval + 'h\n\n' +
+            'Turn interval: ' + interval + 'h\n' +
+            'Start time: ' + startPreview + '\n' +
+            'End time: ' + endPreview + '\n\n' +
             'This will begin the session timer and turn on heaters.'
         );
     }
 
-    function startNow(eggCount) {
+    function startNow(eggCount, scheduledDateTime) {
+        const totalSec = parseInt(durationSec, 10) || 0;
+        const durationDays = Math.floor(totalSec / 86400);
+        const durationHours = Math.floor((totalSec % 86400) / 3600);
+        const durationMinutes = Math.floor((totalSec % 3600) / 60);
+        const durationSeconds = totalSec % 60;
+
+        console.log('[startNow] Starting session with egg_count:', eggCount, 'incubator:', incId);
+
         showFb('Starting session…', 'info');
         $.post('../ajax/hardware_api.php', {
             action: 'start_session',
@@ -1799,17 +2106,24 @@ function startSessionQuick() {
             duration_hours: durationHours,
             duration_minutes: durationMinutes,
             duration_seconds: durationSeconds,
+            scheduled_start_datetime: '',
             token: 'ghost_hw_secret_2024'
         }, function(res) {
+            console.log('[startNow] API response:', res);
             if (!res.success) {
-                showFb('❌ Could not start: ' + (res.message || ''), 'danger');
+                showFb('❌ Could not start session: ' + (res.message || ''), 'danger');
                 return;
             }
-            sendCmd('heater_on', function() {
-                showFb('✅ Session started.', 'success');
+            showFb('✅ Session started.', 'success');
+            setTimeout(function() {
                 fetchLiveStatus();
-            });
+            }, 700);
         }, 'json').fail(function(xhr, textStatus, errorThrown) {
+            console.error('[startNow] API call failed:', {
+                textStatus,
+                errorThrown,
+                response: xhr.responseText
+            });
             const status = xhr && xhr.status ? xhr.status : '0';
             const msg = `❌ Could not reach server (status ${status}). ${textStatus || errorThrown || ''}`;
             showFb(msg, 'danger');
@@ -1826,11 +2140,13 @@ function startSessionQuick() {
     }
 
     // Fetch settings and egg count
+    console.log('[startSessionQuick] Making AJAX calls - get_settings, get_active_egg_count, check_conflicts');
     $.post('../ajax/hardware_api.php', {
         action: 'get_settings',
         incubator_id: incId,
         token: 'ghost_hw_secret_2024'
     }, function(res) {
+        console.log('[startSessionQuick] get_settings response:', res);
         // Also fetch egg count from active batch
         $.post('../ajax/user_batches.php', {
             action: 'get_active_egg_count',
@@ -1840,9 +2156,16 @@ function startSessionQuick() {
             // Before showing final confirmation, check for schedule conflicts for this session window
             const nowTs = Math.floor(Date.now() / 1000);
             const endTs = nowTs + durationSec;
-            $.post('../ajax/user_schedules.php', { action: 'check_conflicts', incubator_id: incId, start_ts: nowTs, end_ts: endTs }, function(confRes) {
-                if (!confRes || !confRes.success || !confRes.conflicts || confRes.conflicts.length === 0) {
-                    const msg = buildConfirmMessage((res && res.success) ? res : null, eggCount);
+            $.post('../ajax/user_schedules.php', {
+                action: 'check_conflicts',
+                incubator_id: incId,
+                start_ts: nowTs,
+                end_ts: endTs
+            }, function(confRes) {
+                if (!confRes || !confRes.success || !confRes.conflicts || confRes.conflicts
+                    .length === 0) {
+                    const msg = buildConfirmMessage((res && res.success) ? res : null,
+                        eggCount);
                     showStartConfirm(msg, eggCount, startNow);
                     return;
                 }
@@ -1858,39 +2181,72 @@ function startSessionQuick() {
                     el.style.borderBottom = '1px solid rgba(255,255,255,.04)';
                     const startD = new Date(c.start * 1000).toLocaleString();
                     const endD = new Date(c.end * 1000).toLocaleString();
-                    el.innerHTML = `<div style="font-weight:700;color:white;">${escapeHtml(c.title || (c.source==='batch'?'Batch':'Schedule'))}</div><div style="font-size:.78rem;color:var(--ghost-muted);">${escapeHtml(c.source)} · ${startD} → ${endD}</div>`;
+                    el.innerHTML =
+                        `<div style="font-weight:700;color:white;">${escapeHtml(c.title || (c.source==='batch'?'Batch':'Schedule'))}</div><div style="font-size:.78rem;color:var(--ghost-muted);">${escapeHtml(c.source)} · ${startD} → ${endD}</div>`;
                     listEl.appendChild(el);
                     if (c.source === 'schedule') scheduleIds.push(c.id);
                 });
                 const conflictModalEl = document.getElementById('conflictModal');
-                const conflictModal = conflictModalEl ? new bootstrap.Modal(conflictModalEl) : null;
+                const conflictModal = conflictModalEl ? new bootstrap.Modal(conflictModalEl) :
+                    null;
                 if (conflictModal) conflictModal.show();
                 const proceedBtn = document.getElementById('conflictProceedBtn');
                 const adjustBtn = document.querySelector('#conflictModal .btn-outline-ghost');
-                if (adjustBtn) adjustBtn.onclick = function() { if (conflictModal) conflictModal.hide(); openIncubateModal(); };
+                if (adjustBtn) adjustBtn.onclick = function() {
+                    if (conflictModal) conflictModal.hide();
+                    openIncubateModal();
+                };
                 if (proceedBtn) {
                     proceedBtn.onclick = function() {
                         if (scheduleIds.length > 0) {
-                            showFb('Cancelling conflicting scheduled tasks…','info');
-                            $.post('../ajax/user_schedules.php', { action: 'cancel_schedules', schedule_ids: scheduleIds }, function(cancelRes){
+                            showFb('Cancelling conflicting scheduled tasks…', 'info');
+                            $.post('../ajax/user_schedules.php', {
+                                action: 'cancel_schedules',
+                                schedule_ids: scheduleIds
+                            }, function(cancelRes) {
                                 if (conflictModal) conflictModal.hide();
-                                if (!cancelRes || !cancelRes.success) { showFb('Could not cancel schedules: ' + (cancelRes && cancelRes.message ? cancelRes.message : ''),'danger'); return; }
+                                if (!cancelRes || !cancelRes.success) {
+                                    showFb('Could not cancel schedules: ' + (
+                                        cancelRes && cancelRes.message ?
+                                        cancelRes.message : ''), 'danger');
+                                    return;
+                                }
                                 startNow(eggCount);
-                            }, 'json').fail(function(){ if (conflictModal) conflictModal.hide(); showFb('Server error cancelling schedules','danger'); });
+                            }, 'json').fail(function() {
+                                if (conflictModal) conflictModal.hide();
+                                showFb('Server error cancelling schedules',
+                                    'danger');
+                            });
                         } else {
-                            if (conflictModal) conflictModal.hide(); startNow(eggCount);
+                            if (conflictModal) conflictModal.hide();
+                            startNow(eggCount);
                         }
                     };
                 }
-            }, 'json').fail(function() {
+            }, 'json').fail(function(xhr, status, error) {
+                console.error('[startSessionQuick] check_conflicts failed:', {
+                    status,
+                    error,
+                    response: xhr.responseText
+                });
                 const msg = buildConfirmMessage((res && res.success) ? res : null, eggCount);
                 showStartConfirm(msg, eggCount, startNow);
             });
-        }, 'json').fail(function() {
+        }, 'json').fail(function(xhr, status, error) {
+            console.error('[startSessionQuick] get_active_egg_count failed:', {
+                status,
+                error,
+                response: xhr.responseText
+            });
             const msg = buildConfirmMessage((res && res.success) ? res : null, 0);
             showStartConfirm(msg, 0, startNow);
         });
-    }, 'json').fail(function() {
+    }, 'json').fail(function(xhr, status, error) {
+        console.error('[startSessionQuick] get_settings failed:', {
+            status,
+            error,
+            response: xhr.responseText
+        });
         // On failure to fetch settings, continue as before
         showStartConfirm(buildConfirmMessage(null, 0), 0, startNow);
     });
@@ -1934,6 +2290,14 @@ function stopSessionQuick() {
                     showSessionModal('Server Error', msg);
                 }
             });
+
+            const intervalInput = document.getElementById('sw_interval');
+            if (intervalInput) {
+                intervalInput.addEventListener('input', function() {
+                    updateIntervalPreview('sw_interval', 'sw_interval_preview');
+                });
+                updateIntervalPreview('sw_interval', 'sw_interval_preview');
+            }
         });
 }
 </script>

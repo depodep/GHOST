@@ -61,8 +61,8 @@ $incubators = $pdo->query("SELECT i.*, ts.target_temp, ts.min_temp, ts.max_temp,
         <div style="background:rgba(34,197,94,0.05);border:1px solid rgba(34,197,94,0.15);border-radius:12px;padding:20px;">
           <div style="font-size:0.72rem;font-weight:700;color:var(--ghost-green);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:16px;">⚙️ Turning Interval</div>
           <label class="form-label-ghost">Every (hours)</label>
-          <input type="number" min="1" max="24" class="form-control-ghost" name="turning_interval" value="<?= $inc['turning_interval'] ?? 8 ?>" style="font-size:1.3rem;font-family:'Bebas Neue',sans-serif;color:var(--ghost-green);text-align:center;">
-          <div style="margin-top:12px;font-size:0.8rem;color:var(--ghost-muted);line-height:1.6;">Eggs should be turned every <strong style="color:var(--ghost-green);"><?= $inc['turning_interval'] ?? 8 ?> hours</strong> to prevent embryo sticking.</div>
+          <input type="number" min="0.01" step="0.01" max="24" class="form-control-ghost" name="turning_interval" value="<?= $inc['turning_interval'] ?? 8 ?>" style="font-size:1.3rem;font-family:'Bebas Neue',sans-serif;color:var(--ghost-green);text-align:center;">
+          <div style="margin-top:12px;font-size:0.8rem;color:var(--ghost-muted);line-height:1.6;">Eggs should be turned every <strong style="color:var(--ghost-green);"><?= $inc['turning_interval'] ?? 8 ?> hours</strong> to prevent embryo sticking. Fractional values are allowed.</div>
         </div>
       </div>
     </div>

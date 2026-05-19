@@ -120,6 +120,10 @@ body.sidebar-collapsed #sidebar .sidebar-inner{opacity:0;pointer-events:none;tra
 .btn-ghost:hover{transform:translateY(-2px);box-shadow:0 8px 28px var(--ghost-blue-glow);}
 .btn-ghost:active{transform:translateY(0);}
 .btn-ghost-sm{padding:7px 14px;font-size:0.75rem;}
+.btn-success-ghost{background:linear-gradient(135deg,#22c55e,#16a34a);border:none;color:white;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:0.82rem;letter-spacing:0.06em;text-transform:uppercase;padding:10px 20px;border-radius:8px;cursor:pointer;transition:all 0.3s var(--transition-page);box-shadow:0 3px 16px rgba(34,197,94,0.28),inset 0 1px 0 rgba(255,255,255,0.2),inset 0 -1px 0 rgba(0,0,0,0.2);position:relative;overflow:hidden;}
+.btn-success-ghost::before{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,0.12) 0%,transparent 50%);pointer-events:none;}
+.btn-success-ghost:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(34,197,94,0.35);}
+.btn-success-ghost:active{transform:translateY(0);}
 .btn-outline-ghost{background:transparent;border:1px solid var(--ghost-border);color:var(--ghost-muted);font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:0.82rem;padding:9px 18px;border-radius:8px;cursor:pointer;transition:all 0.3s var(--transition-page);}
 .btn-outline-ghost:hover{border-color:var(--ghost-blue);color:var(--ghost-blue);background:var(--ghost-blue-dim);transform:translateY(-1px);}
 .btn-danger-ghost{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);color:#f87171;font-size:0.78rem;padding:6px 12px;border-radius:7px;cursor:pointer;transition:all 0.25s var(--transition-page);}

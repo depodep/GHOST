@@ -17,17 +17,19 @@ if ($action === 'update_settings') {
     $target_humidity  = (float)($_POST['target_humidity'] ?? 55.0);
     $min_humidity     = (float)($_POST['min_humidity']    ?? 50.0);
     $max_humidity     = (float)($_POST['max_humidity']    ?? 60.0);
-    $turning_interval = (int)($_POST['turning_interval']  ?? 8);
+    $turning_interval = (float)($_POST['turning_interval']  ?? 8.0);
 
     if (!$incubator_id) {
         jsonResponse(['success' => false, 'message' => 'Missing incubator ID']);
     }
-    if ($turning_interval < 1) {
+    if ($turning_interval < 0.01) {
         jsonResponse(['success' => false, 'message' => 'Turning interval too short.']);
     }
     if ($turning_interval > 24) {
         jsonResponse(['success' => false, 'message' => 'Turning interval must be 24 hours or less.']);
     }
+
+    $pdo->exec("ALTER TABLE temperature_settings MODIFY turning_interval DECIMAL(5,2) NOT NULL DEFAULT 8.00");
 
     $pdo->prepare(
         "INSERT INTO temperature_settings
