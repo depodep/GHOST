@@ -27,6 +27,8 @@
 #include <EEPROM.h>
 #include <DHT.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 #include <time.h>
 
 // ─────────────────────────────────────────────
@@ -50,8 +52,7 @@ const int   SERVER_PORT   = 80;
 const char* SERVER_BASE_PATH = "/GHOST";       
 const int   INCUBATOR_ID  = 1;                 
 // ─────────────────────────────────────────────
-//  LOCAL AP NETWORK (Optional - for debugging)
-// ─────────────────────────────────────────────
+// Optional local AP for debugging
 const bool  ENABLE_AP_MODE = false;           // Set to true for local AP access
 const char* AP_SSID       = "GHOST_Incubator";
 const char* AP_PASSWORD   = "ghost2024pass";
@@ -64,7 +65,32 @@ const bool  TEST_MODE = false;
 const bool  ENABLE_STARTUP_RELAY_CYCLE = false;
 const unsigned long STARTUP_RELAY_OFF_MS = 200;
 const unsigned long STARTUP_RELAY_ON_MS  = 300;
-const unsigned long BOOT_ALL_MODULES_MS  = 10000;
+const unsigned long BOOT_ALL_MODULES_MS  = 5000;
+
+// Compile-time option: allow resuming INCUBATING from EEPROM if server unreachable on boot
+#ifndef RESUME_ON_BOOT_IF_OFFLINE
+#define RESUME_ON_BOOT_IF_OFFLINE 1  // 1 = resume from EEPROM if offline; 0 = force IDLE until server confirms
+#endif
+
+// ─────────────────────────────────────────────
+//  LCD I2C DISPLAY
+// ─────────────────────────────────────────────
+#define LCD_SDA D3
+#define LCD_SCL D4
+#define LCD_I2C_ADDR 0x27
+#define LCD_COLS 16
+#define LCD_ROWS 2
+#define LCD_SCROLL_INTERVAL_MS 250UL
+#define LCD_PHASE_INTERVAL_MS 2500UL
+
+LiquidCrystal_I2C lcd(LCD_I2C_ADDR, LCD_COLS, LCD_ROWS);
+bool lcdReady = false;
+unsigned long lcdTransientUntil = 0;
+String lcdTransientLine1;
+String lcdTransientLine2;
+unsigned long lcdLastRunningPhaseTick = 0;
+uint8_t lcdRunningPhase = 0;
+// LCD display functions moved below session-state declarations
 
 // ─────────────────────────────────────────────
 //  EEPROM ADDRESSES FOR LOCAL STORAGE
@@ -174,6 +200,7 @@ int   savedSwingDurationSec = 30;
 bool  turningLockdownActive = false;
 int   turningLockdownDaysRemaining = -1;
 
+
 // ─────────────────────────────────────────────
 //  RELAY STATE
 // ─────────────────────────────────────────────
@@ -206,6 +233,296 @@ unsigned long exhaustCycleStartedAt = 0;
 bool exhaustCycleActive = false;
 unsigned long lastIdleTestCommand = 0;
 bool bootNeedsServerConfirm = false;
+
+// --- LCD display functions (moved here so session-state globals exist) ---
+String lcdPad(const String& text) {
+    String value = text;
+    if (value.length() > LCD_COLS) {
+        return value.substring(0, LCD_COLS);
+    }
+    while (value.length() < LCD_COLS) {
+        value += ' ';
+    }
+    return value;
+}
+
+String lcdScroll(const String& text, unsigned long nowMs) {
+    String padded = text + "    ";
+    if (padded.length() <= LCD_COLS) {
+        return lcdPad(padded);
+    }
+
+    unsigned long step = nowMs / LCD_SCROLL_INTERVAL_MS;
+    unsigned long offset = step % padded.length();
+    String window = padded.substring(offset) + padded.substring(0, offset);
+    return window.substring(0, LCD_COLS);
+}
+
+void lcdWriteRow(uint8_t row, const String& text) {
+    if (!lcdReady) {
+        return;
+    }
+    lcd.setCursor(0, row);
+    lcd.print(lcdPad(text));
+}
+
+String lcdCompactDuration(unsigned long totalSeconds) {
+    if (totalSeconds >= 86400UL) {
+        unsigned long days = totalSeconds / 86400UL;
+        unsigned long hours = (totalSeconds % 86400UL) / 3600UL;
+        char buffer[20];
+        snprintf(buffer, sizeof(buffer), "%lud %luh", days, hours);
+        return String(buffer);
+    }
+    if (totalSeconds >= 3600UL) {
+        unsigned long hours = totalSeconds / 3600UL;
+        unsigned long minutes = (totalSeconds % 3600UL) / 60UL;
+        char buffer[20];
+        snprintf(buffer, sizeof(buffer), "%luh %lum", hours, minutes);
+        return String(buffer);
+    }
+    if (totalSeconds >= 60UL) {
+        unsigned long minutes = totalSeconds / 60UL;
+        unsigned long seconds = totalSeconds % 60UL;
+        char buffer[20];
+        snprintf(buffer, sizeof(buffer), "%lum %lus", minutes, seconds);
+        return String(buffer);
+    }
+    char buffer[20];
+    snprintf(buffer, sizeof(buffer), "%lus", totalSeconds);
+    return String(buffer);
+}
+
+String lcdDateTimeLabel() {
+    if (!systemTimeLooksValid()) {
+        return String("Uptime ") + String(millis() / 1000UL) + String("s");
+    }
+
+    time_t nowEpoch = time(nullptr);
+    struct tm timeInfo;
+    localtime_r(&nowEpoch, &timeInfo);
+    char buffer[24];
+    snprintf(buffer, sizeof(buffer), "%02d/%02d %02d:%02d", timeInfo.tm_mday, timeInfo.tm_mon + 1, timeInfo.tm_hour, timeInfo.tm_min);
+    return String(buffer);
+}
+
+String lcdSessionDurationLabel() {
+    if (sessionMode != MODE_RUNNING || sessionEndsAt == 0) {
+        return String("21d");
+    }
+
+    unsigned long nowMs = millis();
+    unsigned long remainingMs = (sessionEndsAt > nowMs) ? (sessionEndsAt - nowMs) : 0;
+    return lcdCompactDuration(remainingMs / 1000UL);
+}
+
+String lcdNextSwingLabel() {
+    if (savedTurningInt <= 0.0f || isTurningLockdownActive()) {
+        return String("paused");
+    }
+
+    unsigned long intervalMs = (unsigned long)(savedTurningInt * 3600.0f * 1000.0f);
+    if (intervalMs == 0) {
+        return String("paused");
+    }
+
+    unsigned long nowMs = millis();
+    if (lastSwingScheduledAt == 0) {
+        return lcdCompactDuration(intervalMs / 1000UL);
+    }
+
+    unsigned long elapsedMs = nowMs - lastSwingScheduledAt;
+    unsigned long remainingMs = (elapsedMs >= intervalMs) ? 0 : (intervalMs - elapsedMs);
+    return lcdCompactDuration(remainingMs / 1000UL);
+}
+
+void lcdShowTransient(const String& line1, const String& line2, unsigned long durationMs) {
+    if (!lcdReady) {
+        return;
+    }
+
+    lcdTransientLine1 = line1;
+    lcdTransientLine2 = line2;
+    lcdTransientUntil = millis() + durationMs;
+    lcdWriteRow(0, lcdScroll(lcdTransientLine1, millis()));
+    lcdWriteRow(1, lcdScroll(lcdTransientLine2, millis()));
+}
+
+void lcdRenderBootScreen(uint8_t remainingSeconds) {
+    lcdWriteRow(0, lcdScroll(String("Booting... Turning on all relays"), millis()));
+    lcdWriteRow(1, lcdScroll(String("Relay ON ") + String(remainingSeconds) + String(".."), millis()));
+}
+
+void lcdRenderWifiScreen(bool connected, int attempts) {
+    lcdWriteRow(0, lcdScroll(String("Connecting WiFi"), millis()));
+    if (connected) {
+        lcdWriteRow(1, lcdScroll(String("IP: ") + WiFi.localIP().toString(), millis()));
+    } else {
+        lcdWriteRow(1, lcdScroll(String("Try ") + String(attempts) + String("/20"), millis()));
+    }
+}
+
+void lcdRenderReadyScreen() {
+    lcdWriteRow(0, lcdScroll(String("System ready"), millis()));
+    lcdWriteRow(1, lcdScroll(String("Starting control loop"), millis()));
+}
+
+void lcdRenderIdleScreen() {
+    // Idle: exact layout requested by user
+    lcdWriteRow(0, lcdPad(String("Incubaotr Idle")));
+    lcdWriteRow(1, lcdPad(String("T:") + String(savedTargetTemp, 2) + String(" C:") + String(currentTemp, 2)));
+}
+
+void lcdRenderRunningScreen() {
+    String tempLabel = String(currentTemp, 2);
+    String humLabel = String(currentHumidity, 2);
+    String nextSwingLabel = lcdNextSwingLabel();
+
+    switch (lcdRunningPhase) {
+        case 0: {
+            // Phase 1: Current | Day N  and current readings
+            unsigned long nowMs = millis();
+            unsigned long currentDay = 1;
+            unsigned long totalDays = 21UL;
+            if (sessionEndsAt > sessionStartedAt && sessionStartedAt > 0) {
+                totalDays = (sessionEndsAt - sessionStartedAt) / 86400000UL;
+                if (totalDays == 0) totalDays = 1;
+            }
+            if (sessionStartedAt > 0) {
+                currentDay = (nowMs - sessionStartedAt) / 86400000UL + 1;
+                if (currentDay < 1) currentDay = 1;
+                if (currentDay > totalDays) currentDay = totalDays;
+            }
+            String row0 = String("Current | Day ") + String(currentDay);
+            lcdWriteRow(0, lcdPad(row0));
+            lcdWriteRow(1, lcdPad(String("T:") + tempLabel + String(" H:") + humLabel));
+            break;
+        }
+        case 1: {
+            // Phase 2: Target | Rday: N  and target readings
+            unsigned long totalDays = 21UL;
+            unsigned long remainingDays = 21UL;
+            if (sessionEndsAt > sessionStartedAt && sessionStartedAt > 0) {
+                totalDays = (sessionEndsAt - sessionStartedAt) / 86400000UL;
+                if (totalDays == 0) totalDays = 1;
+                unsigned long nowMs = millis();
+                if (nowMs < sessionEndsAt) {
+                    remainingDays = (sessionEndsAt > nowMs) ? ((sessionEndsAt - nowMs + 86399999UL) / 86400000UL) : 0;
+                } else {
+                    remainingDays = 0;
+                }
+            }
+            String row0 = String("Target | Rday:") + String(remainingDays);
+            lcdWriteRow(0, lcdPad(row0));
+            lcdWriteRow(1, lcdPad(String("T:") + String(savedTargetTemp, 2) + String(" H:") + String(savedTargetHum, 2)));
+            break;
+        }
+        case 2: {
+            // Phase 3: Date range and next swing start->end (dates if time valid)
+            if (systemTimeLooksValid() && sessionStartedAt > 0 && sessionEndsAt > 0) {
+                time_t nowEpoch = time(nullptr);
+                time_t startEpoch = nowEpoch - (time_t)((millis() - sessionStartedAt) / 1000UL);
+                time_t endEpoch = startEpoch + (time_t)((sessionEndsAt - sessionStartedAt) / 1000UL);
+
+                struct tm startTm;
+                localtime_r(&startEpoch, &startTm);
+                char startBuf[12];
+                snprintf(startBuf, sizeof(startBuf), "%02d/%02d", startTm.tm_mday, startTm.tm_mon + 1);
+
+                struct tm endTm;
+                localtime_r(&endEpoch, &endTm);
+                char endBuf[12];
+                snprintf(endBuf, sizeof(endBuf), "%02d/%02d", endTm.tm_mday, endTm.tm_mon + 1);
+
+                String row0 = String("D: ") + String(startBuf) + String(" - ") + String(endBuf);
+                lcdWriteRow(0, lcdPad(row0));
+
+                // Next swing start/end dates when possible
+                if (systemTimeLooksValid() && savedTurningInt > 0.0f) {
+                    unsigned long intervalMs = (unsigned long)(savedTurningInt * 3600.0f * 1000.0f);
+                    unsigned long nowMs = millis();
+                    unsigned long nextStartOffsetMs = 0;
+                    if (lastSwingScheduledAt == 0) {
+                         nextStartOffsetMs = 0;
+                    } else {
+                        unsigned long candidate = lastSwingScheduledAt + intervalMs;
+                        if (candidate > nowMs) nextStartOffsetMs = candidate - nowMs;
+                        else nextStartOffsetMs = 0;
+                    }
+                    time_t nextStartEpoch = time(nullptr) + (time_t)(nextStartOffsetMs / 1000UL);
+                    time_t nextEndEpoch = nextStartEpoch + (time_t)savedSwingDurationSec;
+                    struct tm nsTm; localtime_r(&nextStartEpoch, &nsTm);
+                    struct tm neTm; localtime_r(&nextEndEpoch, &neTm);
+                    char nsBuf[12]; snprintf(nsBuf, sizeof(nsBuf), "%02d/%02d", nsTm.tm_mday, nsTm.tm_mon + 1);
+                    char neBuf[12]; snprintf(neBuf, sizeof(neBuf), "%02d/%02d", neTm.tm_mday, neTm.tm_mon + 1);
+                    String row1 = String("nxt:") + String(nsBuf) + String("->") + String(neBuf);
+                    lcdWriteRow(1, lcdPad(row1));
+                } else {
+                    // Fallback: show relative next swing label
+                    String row1 = String("nxtSwing :") + nextSwingLabel;
+                    lcdWriteRow(1, lcdPad(row1));
+                }
+            } else {
+                // Time not valid: fallback to session duration + next swing relative
+                lcdWriteRow(0, lcdPad(String("D: ") + lcdSessionDurationLabel()));
+                String row1 = String("nxtSwing :") + nextSwingLabel;
+                lcdWriteRow(1, lcdPad(row1));
+            }
+            break;
+        }
+    }
+}
+
+void lcdRenderCompletedScreen() {
+    lcdWriteRow(0, lcdScroll(String("Session complete"), millis()));
+    lcdWriteRow(1, lcdScroll(String("Waiting for server"), millis()));
+}
+
+void updateLcdDisplay() {
+    if (!lcdReady) {
+        return;
+    }
+
+    unsigned long nowMs = millis();
+    if (lcdTransientUntil > nowMs) {
+        lcdWriteRow(0, lcdScroll(lcdTransientLine1, nowMs));
+        lcdWriteRow(1, lcdScroll(lcdTransientLine2, nowMs));
+        return;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        lcdWriteRow(0, lcdScroll(String("WiFi disconnected"), nowMs));
+        lcdWriteRow(1, lcdScroll(String("Retrying connection"), nowMs));
+        return;
+    }
+
+    if (sessionMode == MODE_RUNNING) {
+        if (nowMs - lcdLastRunningPhaseTick >= LCD_PHASE_INTERVAL_MS) {
+            lcdLastRunningPhaseTick = nowMs;
+            lcdRunningPhase = (lcdRunningPhase + 1) % 3; // three phases
+        }
+        lcdRenderRunningScreen();
+        return;
+    }
+
+    if (sessionMode == MODE_COMPLETED) {
+        lcdRenderCompletedScreen();
+        return;
+    }
+
+    lcdRenderIdleScreen();
+}
+
+void lcdInit() {
+    Wire.begin(LCD_SDA, LCD_SCL);
+    lcd.init();
+    lcd.backlight();
+    lcd.clear();
+    lcdReady = true;
+    lcdShowTransient(String("Booting..."), String("Starting display"), 1000UL);
+}
+
+// --- end LCD block ---
 
 const char* getCurrentModeLabel() {
     if (TEST_MODE) return "TEST_MODE";
@@ -288,7 +605,15 @@ void runBootAllModulesSequence() {
     setExhaust(true);
     printRelayStates("BOOT_ALL_ON");
 
-    delay(BOOT_ALL_MODULES_MS);
+    unsigned long bootStart = millis();
+    while (millis() - bootStart < BOOT_ALL_MODULES_MS) {
+        unsigned long elapsed = millis() - bootStart;
+        unsigned long remainingMs = (elapsed >= BOOT_ALL_MODULES_MS) ? 0 : (BOOT_ALL_MODULES_MS - elapsed);
+        uint8_t remainingSeconds = (remainingMs + 999UL) / 1000UL;
+        lcdRenderBootScreen(remainingSeconds == 0 ? 1 : remainingSeconds);
+        delay(100);
+        yield();
+    }
 
     setHeater(false);
     setSwing(false);
@@ -409,6 +734,8 @@ void setup() {
 
     // Initialize EEPROM
     EEPROM.begin(EEPROM_SIZE);
+
+    lcdInit();
     
     // Relay pins — default OFF before anything else
     pinMode(RELAY_HEATER_FAN, OUTPUT);
@@ -432,10 +759,15 @@ void setup() {
     // Load saved parameters from EEPROM
     loadParametersFromEEPROM();
 
+    // Respect EEPROM session mode — allow resuming INCUBATING from EEPROM
+    // if the server is unreachable at boot. You can disable this behavior by
+    // setting `RESUME_ON_BOOT_IF_OFFLINE` to 0 at compile time.
+#if !RESUME_ON_BOOT_IF_OFFLINE
     if (sessionMode != MODE_IDLE) {
-        Serial.println(F("[Boot] Forcing MODE_IDLE until server confirms running"));
+        Serial.println(F("[Boot] RESUME_ON_BOOT_IF_OFFLINE disabled — forcing MODE_IDLE until server confirms running"));
         sessionMode = MODE_IDLE;
     }
+#endif
     bootNeedsServerConfirm = true;
     
     // Check if EEPROM has valid data
@@ -450,9 +782,21 @@ void setup() {
     }
 
     // Start WiFi AP (hotspot for laptop)
-    startWiFiAP();
-    if (WiFi.status() == WL_CONNECTED) {
-        syncTimeFromNtp();
+    bool wifiConnected = startWiFiAP();
+    if (wifiConnected) {
+        // Only sync/fetch initial parameters if we were not already intentionally left in IDLE
+        if (sessionMode != MODE_IDLE) {
+            syncTimeFromNtp();
+            // removed "Loading settings" transient per request
+            bool initialConfigLoaded = fetchParametersFromServer();
+            if (initialConfigLoaded) {
+                bootNeedsServerConfirm = false;
+                lcdShowTransient(String("System ready"), String("Starting control loop"), 5000UL);
+            }
+        } else {
+            // If already in IDLE, skip server fetch to avoid changing mode on boot
+            Serial.println(F("[WiFi] Connected, starting in IDLE (no server fetch)"));
+        }
     }
 
     // Setup test HTTP server endpoints
@@ -479,8 +823,24 @@ void setup() {
 void loop() {
     // Handle test endpoints (non-blocking)
     testServer.handleClient();
+    updateLcdDisplay();
     
     unsigned long now = millis();
+
+    // If we booted with a saved RUNNING state, or we need server confirmation,
+    // attempt to confirm with the server as soon as WiFi is available. If the
+    // fetch fails, continue operating with EEPROM parameters (resume offline).
+    if (bootNeedsServerConfirm && WiFi.status() == WL_CONNECTED) {
+        lastSettingsFetch = now;
+        Serial.println(F("[Boot] Confirming session status from server..."));
+        bool ok = fetchParametersFromServer();
+        if (ok) {
+            bootNeedsServerConfirm = false;
+            lcdShowTransient(String("System ready"), String("Starting control loop"), 3000UL);
+        } else {
+            Serial.println(F("[Boot] Server confirm failed — continuing with local EEPROM state"));
+        }
+    }
 
     // ────────────────────────────────────────────────────────────
     //  TEST MODE: Always run manual relay + DHT sync loop
@@ -524,12 +884,7 @@ void loop() {
             readHumidity();
         }
 
-        if (bootNeedsServerConfirm && WiFi.status() == WL_CONNECTED) {
-            bootNeedsServerConfirm = false;
-            lastSettingsFetch = now;
-            Serial.println(F("[Boot] Confirming session status from server..."));
-            fetchParametersFromServer();
-        }
+        // boot confirmation handled globally before mode branches
 
         if (!ntpTimeReady && WiFi.status() == WL_CONNECTED && now - lastSettingsFetch >= SETTINGS_INTERVAL) {
             syncTimeFromNtp();
@@ -736,7 +1091,7 @@ void loop() {
 // ─────────────────────────────────────────────
 //  WIFI SETUP (Connect to Home Network)
 // ─────────────────────────────────────────────
-void startWiFiAP() {
+bool startWiFiAP() {
     // Connect to home network (STA mode)
     WiFi.mode(WIFI_STA);
     Serial.printf("[WiFi] Connecting to: %s\n", WIFI_SSID);
@@ -744,12 +1099,14 @@ void startWiFiAP() {
     
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        lcdRenderWifiScreen(false, attempts + 1);
         delay(500);
         Serial.print(".");
         attempts++;
     }
     
     if (WiFi.status() == WL_CONNECTED) {
+        lcdRenderWifiScreen(true, attempts);
         Serial.println(F("\n[WiFi] Connected!"));
         Serial.println(F("╔════════════════════════════════════════════════╗"));
         Serial.println(F("║  CONNECTED TO HOME NETWORK (STA MODE)         ║"));
@@ -763,6 +1120,7 @@ void startWiFiAP() {
         Serial.println(F("╚════════════════════════════════════════════════╝\n"));
     } else {
         Serial.println(F("\n[WiFi] FAILED to connect - will retry"));
+        lcdShowTransient(String("WiFi connect failed"), String("Check SSID/PASS"), 4000UL);
          
     }
     
@@ -770,6 +1128,8 @@ void startWiFiAP() {
         WiFi.softAP(AP_SSID, AP_PASSWORD);
         Serial.printf("[AP] Also running AP mode: %s\n", AP_SSID);
     }
+
+    return WiFi.status() == WL_CONNECTED;
 }
 
 
@@ -1178,6 +1538,11 @@ void postSensorDataToServer() {
         }
     } else {
         Serial.printf("[Server] POST failed: %s\n", httpClient.errorToString(httpCode).c_str());
+        if (WiFi.status() == WL_CONNECTED) {
+            lcdShowTransient(String("Server connect failed"), String("Using offline mode"), 3000UL);
+        } else {
+            lcdShowTransient(String("WiFi disconnected"), String("Cannot reach server"), 3000UL);
+        }
     }
 
     httpClient.end();
@@ -1217,6 +1582,11 @@ void postDeviceHeartbeat() {
         Serial.printf("[Heartbeat] POST response: %d\n", httpCode);
     } else {
         Serial.printf("[Heartbeat] POST failed: %s\n", httpClient.errorToString(httpCode).c_str());
+        if (WiFi.status() == WL_CONNECTED) {
+            lcdShowTransient(String("Server connect failed"), String("Heartbeat retrying"), 3000UL);
+        } else {
+            lcdShowTransient(String("WiFi disconnected"), String("Heartbeat offline"), 3000UL);
+        }
     }
     httpClient.end();
     lastHeartbeatSent = millis();
@@ -1225,7 +1595,7 @@ void postDeviceHeartbeat() {
 // ─────────────────────────────────────────────
 //  FETCH PARAMETERS FROM SERVER
 // ─────────────────────────────────────────────
-void fetchParametersFromServer() {
+bool fetchParametersFromServer() {
     // POST to server hardware API to request settings
     String url = "http://";
     url += SERVER_IP;
@@ -1235,6 +1605,11 @@ void fetchParametersFromServer() {
     url += "/ajax/hardware_api.php";
 
     Serial.printf("[Server] POST %s\n", url.c_str());
+    if (WiFi.status() != WL_CONNECTED) {
+        lcdShowTransient(String("WiFi disconnected"), String("Cannot reach server"), 3000UL);
+        return false;
+    }
+
 
     String postData = "action=get_device_config";
     postData += "&token=ghost_hw_secret_2024";
@@ -1439,12 +1814,19 @@ void fetchParametersFromServer() {
             Serial.println(F("[Server] JSON parse error"));
             Serial.printf("[Server] Raw payload: %s\n", payload.c_str());
             Serial.printf("[Server] JSON error: %s\n", err.c_str());
+            lcdShowTransient(String("Server response"), String("parse error"), 3000UL);
+            httpClient.end();
+            return false;
         }
     } else {
         Serial.printf("[Server] POST failed: %d (%s)\n", httpCode, httpClient.errorToString(httpCode).c_str());
+        lcdShowTransient(String("Server connect failed"), String("Using offline mode"), 3000UL);
+        httpClient.end();
+        return false;
     }
 
     httpClient.end();
+    return true;
 }
 
 // ─────────────────────────────────────────────

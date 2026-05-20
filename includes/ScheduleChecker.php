@@ -11,14 +11,14 @@
  */
 class ScheduleChecker {
     private PDO $pdo;
-    private int $gracePeriodMinutes;
+    private int $gracePeriodSeconds;
     private bool $supportsScheduleNotes;
     private bool $supportsSystemActivityRole;
     private bool $supportsNullActivityUserId;
 
-    public function __construct(PDO $pdo, int $gracePeriodMinutes = 5) {
+    public function __construct(PDO $pdo, int $gracePeriodSeconds = 10) {
         $this->pdo = $pdo;
-        $this->gracePeriodMinutes = max(1, $gracePeriodMinutes);
+        $this->gracePeriodSeconds = max(1, $gracePeriodSeconds);
         $this->supportsScheduleNotes = $this->columnExists('schedules', 'notes');
         $this->supportsSystemActivityRole = $this->enumContains('activity_logs', 'role', 'system');
         $this->supportsNullActivityUserId = $this->isNullable('activity_logs', 'user_id');
@@ -58,7 +58,7 @@ class ScheduleChecker {
             error_log(sprintf("[ScheduleChecker] Device state for incubator %d => online=%s last_seen=%s", $incId, $device['online'] ? '1' : '0', $device['last_seen'] === null ? 'NULL' : date('c', $device['last_seen'])));
             if (!$device['online']) {
                 if ($this->isOutsideGracePeriod($device['last_seen'])) {
-                    $reason = "Device offline after grace period ({$this->gracePeriodMinutes} min)";
+                    $reason = "Device offline after grace period ({$this->gracePeriodSeconds} sec)";
                     error_log(sprintf("[ScheduleChecker] Failing schedule %d because device offline and outside grace period", $scheduleId));
                     if ($this->markScheduleFailed($scheduleId, $reason)) {
                         $changes['failed_schedules']++;
@@ -150,7 +150,7 @@ class ScheduleChecker {
         }
 
         $lastSeen = !empty($row['last_seen']) ? strtotime((string)$row['last_seen']) : null;
-        $isFreshSeen = $lastSeen !== null && (time() - $lastSeen) <= ($this->gracePeriodMinutes * 60);
+        $isFreshSeen = $lastSeen !== null && (time() - $lastSeen) <= $this->gracePeriodSeconds;
         $isOnline = (($row['device_status'] ?? 'offline') === 'online') || $isFreshSeen;
 
         return [
@@ -163,7 +163,7 @@ class ScheduleChecker {
         if ($lastSeenTimestamp === null) {
             return true;
         }
-        return (time() - $lastSeenTimestamp) > ($this->gracePeriodMinutes * 60);
+        return (time() - $lastSeenTimestamp) > $this->gracePeriodSeconds;
     }
 
     private function isSessionAlreadyRunning(int $incubatorId): bool {

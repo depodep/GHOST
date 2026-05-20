@@ -139,7 +139,7 @@ if($action === 'add'){
       if ($hwRow) {
         $ds = $hwRow['device_status'] ?? 'offline';
         $lastSeen = !empty($hwRow['last_seen']) ? strtotime($hwRow['last_seen']) : 0;
-        if ($ds === 'online' || ($lastSeen && ($nowTs - $lastSeen) < 300)) {
+        if ($ds === 'online' || ($lastSeen && ($nowTs - $lastSeen) < 10)) {
           $isOffline = false;
         }
       }

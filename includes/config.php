@@ -114,7 +114,7 @@ function severityIcon($severity) {
 function runBatchScheduler() {
     try {
         $pdo = getDB();
-        $scheduleGraceSeconds = 300; // 5-minute grace after due time before failing
+        $scheduleGraceSeconds = 10; // 10-second grace after due time before failing
         // Run in transaction to avoid race conditions
         $pdo->beginTransaction();
 
@@ -322,7 +322,7 @@ function runBatchScheduler() {
 
         // 1.5) Detect running sessions with no heartbeat within timeout and mark them failed
         try {
-            $heartbeatTimeoutMinutes = 5;
+            $heartbeatTimeoutSeconds = 10;
             $staleStmt = $pdo->prepare(
                 "SELECT s.id AS session_id, s.batch_id, s.incubator_id, s.started_at, h.last_seen
                  FROM sessions s
@@ -335,8 +335,8 @@ function runBatchScheduler() {
                 $startedAt = strtotime($r['started_at']);
                 $lastSeen = $r['last_seen'] ? strtotime($r['last_seen']) : 0;
 
-                // If never seen or last seen earlier than start + timeout minutes
-                if ($lastSeen === 0 || $lastSeen < ($startedAt + ($heartbeatTimeoutMinutes * 60))) {
+                // If never seen or last seen earlier than start + timeout seconds
+                if ($lastSeen === 0 || $lastSeen < ($startedAt + $heartbeatTimeoutSeconds)) {
                     // Mark session interrupted/failed
                     $pdo->prepare("UPDATE sessions SET status = 'interrupted', ended_at = NOW(), reason_ended = ? WHERE id = ?")
                         ->execute(['no_heartbeat', $r['session_id']]);
@@ -352,7 +352,7 @@ function runBatchScheduler() {
 
                     // Log activity
                     $pdo->prepare("INSERT INTO activity_logs (role, user_id, action, details, ip_address) VALUES (?,?,?,?,?)")
-                        ->execute(['system', null, 'auto_session_failed_no_heartbeat', "Session {$r['session_id']} for incubator {$r['incubator_id']} failed due to no heartbeat within {$heartbeatTimeoutMinutes} minutes", $ip]);
+                        ->execute(['system', null, 'auto_session_failed_no_heartbeat', "Session {$r['session_id']} for incubator {$r['incubator_id']} failed due to no heartbeat within {$heartbeatTimeoutSeconds} seconds", $ip]);
 
                     // Log session event
                     $pdo->prepare(

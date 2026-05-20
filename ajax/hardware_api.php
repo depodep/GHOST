@@ -205,11 +205,11 @@ function ensureBatchesSchema(PDO $pdo) {
 }
 
 function refreshScheduleState(PDO $pdo, int $incubator_id): array {
-    $checker = new ScheduleChecker($pdo, 5);
+    $checker = new ScheduleChecker($pdo, 10);
     $checkerChanges = $checker->processPendingSchedules($incubator_id);
 
     ensureBatchesSchema($pdo);
-    $scheduleGraceSeconds = 300; // 5 minutes
+    $scheduleGraceSeconds = 10; // 10 seconds
     $changes = [
         'failed_batches' => 0,
         'promoted_batches' => 0,
@@ -374,7 +374,7 @@ function upsertHardwareState(PDO $pdo, $incubator_id, array $state) {
         'exhaust_status' => 0,
         'swing_on' => 0,
         'swing_status' => 0,
-        'last_seen' => $now,
+        'last_seen' => null,
         'last_active_at' => $now,
         'last_server_sync' => $now,
         'last_egg_turn_at' => null,
@@ -412,7 +412,7 @@ function upsertHardwareState(PDO $pdo, $incubator_id, array $state) {
             exhaust_status = VALUES(exhaust_status),
             swing_on = VALUES(swing_on),
             swing_status = VALUES(swing_status),
-            last_seen = VALUES(last_seen),
+            last_seen = COALESCE(VALUES(last_seen), last_seen),
             last_active_at = VALUES(last_active_at),
             last_server_sync = VALUES(last_server_sync),
             last_egg_turn_at = VALUES(last_egg_turn_at),
@@ -1258,16 +1258,13 @@ if ($action === 'start_session') {
             'current_mode' => 'incubating',
             'active_session_name' => $batchName,
             'last_server_sync' => $dbNow,
-            'last_seen' => $dbNow,
             'last_active_at' => $dbNow
         ]);
 
         // Ensure hardware_state is explicitly updated in case upsertHardwareState didn't persist session fields
         $pdo->prepare(
-            "UPDATE hardware_state SET session_status = 'running', session_started_at = ?, session_ends_at = ?, session_completed_at = NULL, current_mode = 'incubating', active_session_name = ?, last_server_sync = NOW(), last_seen = NOW(), last_active_at = NOW() WHERE incubator_id = ?"
+            "UPDATE hardware_state SET session_status = 'running', session_started_at = ?, session_ends_at = ?, session_completed_at = NULL, current_mode = 'incubating', active_session_name = ?, last_server_sync = NOW(), last_active_at = NOW() WHERE incubator_id = ?"
         )->execute([$sessionStartedAt, $sessionEndsAt, $batchName, $incubator_id]);
-
-        error_log(sprintf("[Hardware API] start_session forced UPDATE hardware_state for incubator_id=%d", $incubator_id));
 
         $pdo->prepare(
             "UPDATE batches
@@ -1526,7 +1523,7 @@ if ($action === 'get_live_status') {
     $state['humidity'] = $state['display_humidity'] ?? $state['humidity'];
 
     $lastSeen = !empty($state['last_seen']) ? strtotime($state['last_seen']) : 0;
-    $online   = $lastSeen > 0 && (time() - $lastSeen) < 45;
+    $online   = $lastSeen > 0 && (time() - $lastSeen) < 10;
 
     $incubationDay = null;
     if (!empty($state['session_started_at'])) {
@@ -2205,7 +2202,7 @@ if ($action === 'get_health_status') {
                 $state['wifi_connected'] = $state['wifi_connected'] ?? (int)($dhtRow['wifi_connected'] ?? 0);
                 $state['updated_at'] = $state['updated_at'] ?? $dhtRow['updated_at'];
                 $state['seconds_since_last_seen'] = $state['seconds_since_last_seen'] ?? $secondsSince;
-                $state['status_indicator'] = $state['status_indicator'] ?? ($secondsSince < 45 ? 'online' : ($secondsSince < 90 ? 'idle' : 'offline'));
+                $state['status_indicator'] = $state['status_indicator'] ?? ($secondsSince < 10 ? 'online' : ($secondsSince < 20 ? 'idle' : 'offline'));
 
                 error_log("[DEBUG] Merged state after test_mode_dht fallback: " . json_encode($state));
             }

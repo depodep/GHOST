@@ -32,7 +32,7 @@ if (empty($pending)) {
 }
 
 // Run checker
-$checker = new ScheduleChecker($pdo, 5);
+$checker = new ScheduleChecker($pdo, 10);
 $changes = $checker->processPendingSchedules($incubatorId);
 
 echo "Checker changes:\n";

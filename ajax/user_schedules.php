@@ -239,7 +239,7 @@ if($action === 'add'){
       if ($hwRow) {
         $ds = $hwRow['device_status'] ?? 'offline';
         $lastSeen = !empty($hwRow['last_seen']) ? strtotime($hwRow['last_seen']) : 0;
-        if ($ds === 'online' || ($lastSeen && ($nowTs - $lastSeen) < 300)) {
+        if ($ds === 'online' || ($lastSeen && ($nowTs - $lastSeen) < 10)) {
           $isOffline = false;
         }
       }
@@ -411,9 +411,9 @@ if($action === 'mark_done'){
         $sessionEndsAt = date('Y-m-d H:i:s', strtotime('+' . $sessionDuration . ' seconds', $startTs));
 
         $up = $pdo->prepare(
-          "INSERT INTO hardware_state (incubator_id, session_status, session_started_at, session_ends_at, session_completed_at, current_mode, active_session_name, last_server_sync, last_seen, last_active_at)
-           VALUES (?, 'running', ?, ?, NULL, 'incubating', ?, NOW(), NOW(), NOW())
-           ON DUPLICATE KEY UPDATE session_status=VALUES(session_status), session_started_at=VALUES(session_started_at), session_ends_at=VALUES(session_ends_at), current_mode=VALUES(current_mode), active_session_name=VALUES(active_session_name), last_server_sync=VALUES(last_server_sync), last_seen=VALUES(last_seen), last_active_at=VALUES(last_active_at)"
+          "INSERT INTO hardware_state (incubator_id, session_status, session_started_at, session_ends_at, session_completed_at, current_mode, active_session_name, last_server_sync, last_active_at)
+           VALUES (?, 'running', ?, ?, NULL, 'incubating', ?, NOW(), NOW())
+           ON DUPLICATE KEY UPDATE session_status=VALUES(session_status), session_started_at=VALUES(session_started_at), session_ends_at=VALUES(session_ends_at), current_mode=VALUES(current_mode), active_session_name=VALUES(active_session_name), last_server_sync=VALUES(last_server_sync), last_active_at=VALUES(last_active_at)"
         );
         $up->execute([$incubator_id, $sessionStartedAt, $sessionEndsAt, $batchName]);
       }

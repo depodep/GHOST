@@ -1064,7 +1064,11 @@ function fetchLiveStatus() {
     if (!res.success) return;
     const dot = document.getElementById('hwOnlineDot');
     const lbl = document.getElementById('hwOnlineLabel');
-    const isOnline = res.online;
+    const tempValue = parseFloat(res.current_temp);
+    const humidityValue = parseFloat(res.current_humidity);
+    const hasTemp = Number.isFinite(tempValue) && tempValue > 0;
+    const hasHumidity = Number.isFinite(humidityValue) && humidityValue > 0;
+    const isOnline = res.online && hasTemp && hasHumidity;
     
     if (isOnline) { 
       dot.style.background='#22c55e'; 
@@ -1127,6 +1131,7 @@ function fetchLiveStatus() {
     liveSessionState.activeSessionName = res.active_session_name || null;
     liveSessionState.incubationDay = res.incubation_day || null;
     liveSessionState.runningOps = res.running_ops || 'idle';
+    liveSessionState.deviceStatus = isOnline ? 'online' : 'offline';
     liveSessionState.wifiStatus = res.wifi_status || 'disconnected';
     liveSessionState.lastEggTurnAt = res.last_egg_turn_at || null;
     liveSessionState.lastServerSync = res.last_server_sync || res.last_seen || null;
@@ -1299,7 +1304,7 @@ function stopPulse() {
 
 function updateControlButtons() {
   const status = liveSessionState.status || 'idle';
-  const deviceOnline = liveSessionState.wifiStatus === 'connected' || document.getElementById('hwOnlineDot').style.background === '#22c55e';
+  const deviceOnline = liveSessionState.deviceStatus === 'online';
   
   // New monitoring panel buttons
   const btnStart = document.getElementById('btnStart');
