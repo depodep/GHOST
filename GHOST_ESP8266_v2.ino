@@ -369,7 +369,7 @@ void lcdRenderReadyScreen() {
 
 void lcdRenderIdleScreen() {
     // Idle: exact layout requested by user
-    lcdWriteRow(0, lcdPad(String("Incubaotr Idle")));
+    lcdWriteRow(0, lcdPad(String("Incubator Idle")));
     lcdWriteRow(1, lcdPad(String("T:") + String(savedTargetTemp, 2) + String(" C:") + String(currentTemp, 2)));
 }
 
@@ -1684,6 +1684,46 @@ bool fetchParametersFromServer() {
             if (nextSessionNameValue && nextSessionNameValue[0] != '\0') {
                 strncpy(newNextSessionName, nextSessionNameValue, sizeof(newNextSessionName) - 1);
                 newNextSessionName[sizeof(newNextSessionName) - 1] = '\0';
+            }
+
+            // Accept explicit session start/end from server when provided.
+            time_t serverSessionStartEpoch = 0;
+            time_t serverSessionEndEpoch = 0;
+            int serverSessionDurationDays = 0;
+            if (doc.containsKey("session_start_epoch") && !doc["session_start_epoch"].isNull()) {
+                serverSessionStartEpoch = (time_t)doc["session_start_epoch"].as<long>();
+            }
+            if (doc.containsKey("session_end_epoch") && !doc["session_end_epoch"].isNull()) {
+                serverSessionEndEpoch = (time_t)doc["session_end_epoch"].as<long>();
+            } else if (doc.containsKey("session_duration_days") && !doc["session_duration_days"].isNull()) {
+                serverSessionDurationDays = doc["session_duration_days"] | 0;
+            }
+
+            // If server provided an absolute start/end and device time is valid,
+            // convert those epochs into the device's millis()-based session timestamps
+            // so existing code can continue to use sessionStartedAt/sessionEndsAt.
+            if (serverSessionStartEpoch != 0 && systemTimeLooksValid()) {
+                time_t nowEpoch = time(nullptr);
+                long deltaSec = (long)(nowEpoch - serverSessionStartEpoch);
+                if (deltaSec >= 0) {
+                    sessionStartedAt = millis() - (unsigned long)deltaSec * 1000UL;
+                } else {
+                    // session start in future
+                    sessionStartedAt = millis() + (unsigned long)(-deltaSec) * 1000UL;
+                }
+
+                if (serverSessionEndEpoch != 0) {
+                    long durSec = (long)(serverSessionEndEpoch - serverSessionStartEpoch);
+                    if (durSec < 0) durSec = 0;
+                    sessionEndsAt = sessionStartedAt + (unsigned long)durSec * 1000UL;
+                } else if (serverSessionDurationDays > 0) {
+                    sessionEndsAt = sessionStartedAt + (unsigned long)serverSessionDurationDays * 24UL * 3600UL * 1000UL;
+                } else {
+                    // fallback to default 21 days
+                    sessionEndsAt = sessionStartedAt + 21UL * 24UL * 3600UL * 1000UL;
+                }
+                Serial.printf("[Server] Applied session_start_epoch=%ld session_end_epoch=%ld (converted to millis)", (long)serverSessionStartEpoch, (long)serverSessionEndEpoch);
+                Serial.println();
             }
 
             bool hasSessionStatus = doc.containsKey("session_status");
