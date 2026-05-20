@@ -44,6 +44,7 @@ try:
     import pymysql
     USING_MYSQL = True
 except ImportError:
+    pymysql = None
     USING_MYSQL = False
 
 # ============================================================
@@ -69,6 +70,10 @@ CHECK_INTERVAL = 60
 
 def get_mysql_connection():
     """Establish MySQL connection"""
+    if not USING_MYSQL or pymysql is None:
+        print("[ERROR] PyMySQL is not installed in this Python environment.")
+        return None
+
     try:
         connection = pymysql.connect(
             host=DB_HOST,
@@ -79,7 +84,7 @@ def get_mysql_connection():
             cursorclass=pymysql.cursors.DictCursor
         )
         return connection
-    except pymysql.Error as e:
+    except Exception as e:
         print(f"[ERROR] MySQL connection failed: {e}")
         return None
 
@@ -144,11 +149,12 @@ def get_pending_schedules():
             s.title,
             s.scheduled_date,
             s.scheduled_time,
-            s.target_temp,
-            s.target_humidity,
+            COALESCE(s.target_temp, ts.target_temp, 37.50) AS target_temp,
+            COALESCE(s.target_humidity, ts.target_humidity, 55.00) AS target_humidity,
             i.device_prototype_status
         FROM schedules s
         LEFT JOIN incubators i ON s.incubator_id = i.id
+        LEFT JOIN temperature_settings ts ON ts.incubator_id = s.incubator_id
         WHERE s.status = 'pending'
         AND CONCAT(s.scheduled_date, ' ', s.scheduled_time) <= NOW()
         ORDER BY s.scheduled_date ASC, s.scheduled_time ASC
@@ -260,15 +266,37 @@ def mark_schedule_failed(schedule_id, reason):
     return success
 
 def log_schedule_event(schedule_id, event_type, message):
-    """Log an event for a schedule"""
+    """Log scheduler events in activity_logs to avoid session_logs FK constraints."""
     query = """
-        INSERT INTO session_logs 
-        (event_type, message, created_at)
-        VALUES (%s, %s, NOW())
+        INSERT INTO activity_logs
+        (role, user_id, action, details, ip_address)
+        VALUES ('system', NULL, %s, %s, '127.0.0.1')
     """
-    
+
     log_message = f"Schedule #{schedule_id}: {message}"
     execute_update(query, (event_type, log_message))
+
+
+def mark_schedule_done(schedule_id):
+    """Mark schedule as done after successful session start."""
+    query = """
+        UPDATE schedules
+        SET status = 'done'
+        WHERE id = %s
+    """
+    return execute_update(query, (schedule_id,))
+
+
+def mark_batch_incubating(batch_id):
+    """Promote linked batch from scheduled to incubating when session starts."""
+    if not batch_id:
+        return True
+    query = """
+        UPDATE batches
+        SET status = 'incubating'
+        WHERE id = %s AND status = 'scheduled'
+    """
+    return execute_update(query, (batch_id,))
 
 def send_device_start_command(incubator_id, schedule_id):
     """
@@ -351,6 +379,8 @@ def process_pending_schedules():
         if session_created:
             # Send command to device to start
             send_device_start_command(incubator_id, schedule_id)
+            mark_schedule_done(schedule_id)
+            mark_batch_incubating(schedule.get('batch_id'))
             print(f"    [SUCCESS] Session started automatically for schedule #{schedule_id}")
         else:
             reason = "Failed to create session record"

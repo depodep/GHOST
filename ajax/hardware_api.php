@@ -205,6 +205,7 @@ function ensureBatchesSchema(PDO $pdo) {
 
 function refreshScheduleState(PDO $pdo, int $incubator_id): array {
     ensureBatchesSchema($pdo);
+    $scheduleGraceSeconds = 300; // 5 minutes
     $changes = [
         'failed_batches' => 0,
         'promoted_batches' => 0,
@@ -213,7 +214,7 @@ function refreshScheduleState(PDO $pdo, int $incubator_id): array {
     ];
 
     $failedScheduleStmt = $pdo->prepare(
-        "SELECT s.id, s.batch_id
+                "SELECT s.id, s.batch_id, s.scheduled_date, s.scheduled_time
          FROM schedules s
          LEFT JOIN batches b ON b.id = s.batch_id
          WHERE s.incubator_id = ?
@@ -224,8 +225,15 @@ function refreshScheduleState(PDO $pdo, int $incubator_id): array {
     );
     $failedScheduleStmt->execute([$incubator_id]);
     $overdueSchedules = $failedScheduleStmt->fetchAll();
+    $nowTs = time();
 
     foreach ($overdueSchedules as $schedule) {
+        $scheduledAtTs = strtotime(trim(($schedule['scheduled_date'] ?? '') . ' ' . ($schedule['scheduled_time'] ?? '00:00:00')));
+        if ($scheduledAtTs !== false && ($scheduledAtTs + $scheduleGraceSeconds) > $nowTs) {
+            // Still within grace window, do not fail immediately.
+            continue;
+        }
+
         $updated = $pdo->prepare(
             "UPDATE schedules SET status = 'failed' WHERE id = ? AND status = 'pending'"
         )->execute([$schedule['id']]);
@@ -265,8 +273,8 @@ function refreshScheduleState(PDO $pdo, int $incubator_id): array {
         if ($scheduledStartTime) {
             try {
                 $startDateTime = new DateTime($scheduledStartTime);
-                $minutesSinceScheduled = ($now->getTimestamp() - $startDateTime->getTimestamp()) / 60;
-                if ($minutesSinceScheduled > 5) {
+                $secondsSinceScheduled = ($now->getTimestamp() - $startDateTime->getTimestamp());
+                if ($secondsSinceScheduled > $scheduleGraceSeconds) {
                     $pdo->prepare(
                         "UPDATE batches SET status = 'failed' WHERE id = ? AND status = 'scheduled'"
                     )->execute([$sch['id']]);
@@ -336,7 +344,10 @@ function calculateTurningLockdownState(array $state) {
 }
 
 function upsertHardwareState(PDO $pdo, $incubator_id, array $state) {
-    $now = date('Y-m-d H:i:s');
+    $now = (string)$pdo->query("SELECT NOW()")->fetchColumn();
+    if ($now === '') {
+        $now = date('Y-m-d H:i:s');
+    }
     $defaults = [
         'temperature' => null,
         'humidity' => null,
@@ -614,6 +625,8 @@ if ($action === 'device_status' || $action === 'device_heartbeat') {
 
     $sessionStatus = $activeBatch ? 'running' : ($current_mode === 'incubating' ? 'running' : 'idle');
 
+    $dbNow = (string)$pdo->query("SELECT NOW()")->fetchColumn();
+
     upsertHardwareState($pdo, $incubator_id, [
         'temperature' => $temperature,
         'humidity' => $humidity,
@@ -627,9 +640,9 @@ if ($action === 'device_status' || $action === 'device_heartbeat') {
         'exhaust_status' => $exhaust,
         'swing_on' => $swing_on,
         'swing_status' => $swing_on,
-        'last_seen' => date('Y-m-d H:i:s'),
-        'last_active_at' => date('Y-m-d H:i:s'),
-        'last_server_sync' => date('Y-m-d H:i:s'),
+        'last_seen' => $dbNow,
+        'last_active_at' => $dbNow,
+        'last_server_sync' => $dbNow,
         'last_egg_turn_at' => $lastEggTurnAt ?: null,
         'running_ops' => $running_ops !== '' ? $running_ops : buildRunningOps([
             'heater_on' => $heater_on,
@@ -1197,6 +1210,8 @@ if ($action === 'start_session') {
         ->execute([$scheduledStartFormatted, $batchId]);
 
     if ($startImmediately) {
+        $dbNow = (string)$pdo->query("SELECT NOW()")->fetchColumn();
+
         upsertHardwareState($pdo, $incubator_id, [
             'session_status' => 'running',
             'session_started_at' => $sessionStartedAt,
@@ -1204,9 +1219,9 @@ if ($action === 'start_session') {
             'session_completed_at' => null,
             'current_mode' => 'incubating',
             'active_session_name' => $batchName,
-            'last_server_sync' => date('Y-m-d H:i:s'),
-            'last_seen' => date('Y-m-d H:i:s'),
-            'last_active_at' => date('Y-m-d H:i:s')
+            'last_server_sync' => $dbNow,
+            'last_seen' => $dbNow,
+            'last_active_at' => $dbNow
         ]);
 
         // Ensure hardware_state is explicitly updated in case upsertHardwareState didn't persist session fields
@@ -1286,8 +1301,11 @@ if ($action === 'stop_session') {
 //     Returns the latest values from hardware_state
 // ════════════════════════════════════════════
 if ($action === 'get_live_status') {
-    // Verify user is authenticated
-    if (!isset($_SESSION['user_id']) || empty($_SESSION['user_id'])) {
+    $isAdmin = isset($_SESSION['admin_id']) && !empty($_SESSION['admin_id']);
+    $isUser = isset($_SESSION['user_id']) && !empty($_SESSION['user_id']);
+
+    // Verify caller is authenticated (admin or user)
+    if (!$isAdmin && !$isUser) {
         json_response(['success' => false, 'message' => 'User not authenticated']);
     }
     
@@ -1297,15 +1315,29 @@ if ($action === 'get_live_status') {
         exit;
     }
     
-    // Verify user has access to this incubator
-    $userIncubatorCheck = $pdo->prepare(
-        "SELECT COUNT(*) as cnt FROM batches WHERE incubator_id = ? AND user_id = ?"
-    );
-    $userIncubatorCheck->execute([$incubator_id, $_SESSION['user_id']]);
-    $hasAccess = $userIncubatorCheck->fetchColumn() > 0;
-    
-    if (!$hasAccess) {
-        json_response(['success' => false, 'message' => 'Access denied']);
+    // Verify user has access to this incubator.
+    // Admin may access all incubators. User may access via incubator ownership
+    // or if they already have batches on that incubator.
+    if (!$isAdmin) {
+        $userId = (int)$_SESSION['user_id'];
+        $userIncubatorCheck = $pdo->prepare(
+            "SELECT COUNT(*)
+             FROM incubators i
+             WHERE i.id = ?
+               AND (
+                    i.user_id = ?
+                    OR EXISTS (
+                        SELECT 1 FROM batches b
+                        WHERE b.incubator_id = i.id AND b.user_id = ?
+                    )
+               )"
+        );
+        $userIncubatorCheck->execute([$incubator_id, $userId, $userId]);
+        $hasAccess = ((int)$userIncubatorCheck->fetchColumn()) > 0;
+
+        if (!$hasAccess) {
+            json_response(['success' => false, 'message' => 'Access denied']);
+        }
     }
 
     $state = fetchLiveState($pdo, $incubator_id);
@@ -1408,7 +1440,7 @@ if ($action === 'get_live_status') {
     $state['humidity'] = $state['display_humidity'] ?? $state['humidity'];
 
     $lastSeen = !empty($state['last_seen']) ? strtotime($state['last_seen']) : 0;
-    $online   = $lastSeen > 0 && (time() - $lastSeen) < 15;
+    $online   = $lastSeen > 0 && (time() - $lastSeen) < 45;
 
     $incubationDay = null;
     if (!empty($state['session_started_at'])) {
@@ -1695,6 +1727,7 @@ if ($action === 'test_mode_set_dht') {
             : (($currentHeater1 || $currentHeater2) ? 1 : (int)($previous['heater_on'] ?? 0));
 
         // Update hardware_state for get_health_status display
+        $dbNow = (string)$pdo->query("SELECT NOW()")->fetchColumn();
         upsertHardwareState($pdo, $incubator_id, [
             'temperature' => $temp,
             'humidity' => $humidity,
@@ -1708,9 +1741,9 @@ if ($action === 'test_mode_set_dht') {
             'exhaust_status' => $currentExhaust,
             'swing_on' => $currentSwing,
             'swing_status' => $currentSwing,
-            'last_seen' => date('Y-m-d H:i:s'),
-            'last_active_at' => date('Y-m-d H:i:s'),
-            'last_server_sync' => date('Y-m-d H:i:s'),
+            'last_seen' => $dbNow,
+            'last_active_at' => $dbNow,
+            'last_server_sync' => $dbNow,
             'wifi_status' => 'connected',
         ]);
 
@@ -2031,7 +2064,7 @@ if ($action === 'get_health_status') {
             "SELECT hs.*, 
                     TIMESTAMPDIFF(SECOND, hs.last_seen, NOW()) AS seconds_since_last_seen,
                     CASE 
-                        WHEN TIMESTAMPDIFF(SECOND, hs.last_seen, NOW()) < 10 THEN 'online'
+                        WHEN TIMESTAMPDIFF(SECOND, hs.last_seen, NOW()) < 45 THEN 'online'
                         WHEN TIMESTAMPDIFF(SECOND, hs.last_seen, NOW()) < 60 THEN 'idle'
                         ELSE 'offline'
                     END AS status_indicator
@@ -2086,7 +2119,7 @@ if ($action === 'get_health_status') {
                 $state['wifi_connected'] = $state['wifi_connected'] ?? (int)($dhtRow['wifi_connected'] ?? 0);
                 $state['updated_at'] = $state['updated_at'] ?? $dhtRow['updated_at'];
                 $state['seconds_since_last_seen'] = $state['seconds_since_last_seen'] ?? $secondsSince;
-                $state['status_indicator'] = $state['status_indicator'] ?? ($secondsSince < 10 ? 'online' : ($secondsSince < 60 ? 'idle' : 'offline'));
+                $state['status_indicator'] = $state['status_indicator'] ?? ($secondsSince < 45 ? 'online' : ($secondsSince < 90 ? 'idle' : 'offline'));
 
                 error_log("[DEBUG] Merged state after test_mode_dht fallback: " . json_encode($state));
             }

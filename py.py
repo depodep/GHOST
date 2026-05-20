@@ -300,38 +300,40 @@ def main():
     print("=" * 60)
 
     loop_counter = 0
+    try:
+        while True:
+            print("\n\n---------------- LOOP START ----------------")
 
-    while True:
-        print("\n\n---------------- LOOP START ----------------")
+            # Fetch settings every 5 loops
+            settings = None
 
-        # Fetch settings every 5 loops
-        settings = None
+            if loop_counter % 5 == 0:
+                settings = fetch_server_settings()
 
-        if loop_counter % 5 == 0:
-            settings = fetch_server_settings()
+            # Fetch control commands
+            config = fetch_control_commands()
+            session_running = bool(config and config.get("session_status") == "running")
 
-        # Fetch control commands
-        config = fetch_control_commands()
-        session_running = bool(config and config.get("session_status") == "running")
+            # Generate fake sensor readings
+            sensor_data = generate_sensor_data(settings, session_running=session_running)
 
-        # Generate fake sensor readings
-        sensor_data = generate_sensor_data(settings, session_running=session_running)
+            # Keep the device online on the server side with a heartbeat before logging data.
+            post_device_heartbeat(sensor_data, config)
 
-        # Keep the device online on the server side with a heartbeat before logging data.
-        post_device_heartbeat(sensor_data, config)
+            print("\n[SENSOR DATA]")
+            print(json.dumps(sensor_data, indent=4))
 
-        print("\n[SENSOR DATA]")
-        print(json.dumps(sensor_data, indent=4))
+            # Send to server
+            send_sensor_data(sensor_data)
 
-        # Send to server
-        send_sensor_data(sensor_data)
+            print("---------------- LOOP END ----------------")
 
-        print("---------------- LOOP END ----------------")
+            loop_counter += 1
 
-        loop_counter += 1
-
-        # Delay like ESP8266 loop
-        time.sleep(5)
+            # Delay like ESP8266 loop
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("\n\n[STOPPED] Emulator stopped by user.")
 
 # -----------------------------
 # ENTRY POINT

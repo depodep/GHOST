@@ -13,14 +13,30 @@
 
 require_once __DIR__ . '/includes/config.php';
 
-echo "\n=== GHOST Incubator System Setup ===\n\n";
+$isCli = (php_sapi_name() === 'cli');
+if (!$isCli) {
+    header('Content-Type: text/html; charset=utf-8');
+    echo "<!doctype html><html><head><meta charset='utf-8'><title>GHOST Setup</title></head><body><pre>";
+}
+
+function out($text) {
+    echo $text;
+}
+
+register_shutdown_function(function () use ($isCli) {
+    if (!$isCli) {
+        echo "</pre></body></html>";
+    }
+});
+
+out("\n=== GHOST Incubator System Setup ===\n\n");
 
 $pdo = getDB();
 
-echo "1. Creating/updating core tables...\n";
+out("1. Creating/updating core tables...\n");
 
 // Incubators table
-echo "   - incubators...";
+out("   - incubators...");
 try {
     // First ensure basic table exists
     $pdo->exec("
@@ -56,13 +72,13 @@ try {
         try { $pdo->exec("ALTER TABLE incubators ADD COLUMN status ENUM('active','inactive') DEFAULT 'active'"); } catch (Exception $e) {}
     }
     
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " ✓ (exists)\n";
+    out(" ✓ (exists)\n");
 }
 
 // Users table
-echo "   - users...";
+out("   - users...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS users (
@@ -74,13 +90,13 @@ try {
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " (exists or error) ✓\n";
+    out(" (exists or error) ✓\n");
 }
 
 // Temperature settings
-echo "   - temperature_settings...";
+out("   - temperature_settings...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS temperature_settings (
@@ -97,13 +113,13 @@ try {
             FOREIGN KEY (incubator_id) REFERENCES incubators(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " (exists or error) ✓\n";
+    out(" (exists or error) ✓\n");
 }
 
 // Batches table
-echo "   - batches...";
+out("   - batches...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS batches (
@@ -124,13 +140,13 @@ try {
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " (exists or error) ✓\n";
+    out(" (exists or error) ✓\n");
 }
 
 // Schedules table
-echo "   - schedules...";
+out("   - schedules...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS schedules (
@@ -199,15 +215,15 @@ try {
     }
     
     if ($added > 0) {
-        echo " (added $added columns)";
+        out(" (added $added columns)");
     }
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " ✓ (exists)\n";
+    out(" ✓ (exists)\n");
 }
 
 // Hardware state
-echo "   - hardware_state...";
+out("   - hardware_state...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS hardware_state (
@@ -229,13 +245,13 @@ try {
             FOREIGN KEY (incubator_id) REFERENCES incubators(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " (exists or error) ✓\n";
+    out(" (exists or error) ✓\n");
 }
 
 // Temperature logs
-echo "   - temperature_logs...";
+out("   - temperature_logs...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS temperature_logs (
@@ -250,37 +266,46 @@ try {
             FOREIGN KEY (incubator_id) REFERENCES incubators(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " (exists or error) ✓\n";
+    out(" (exists or error) ✓\n");
 }
 
 // Activity logs
-echo "   - activity_logs...";
+out("   - activity_logs...");
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS activity_logs (
             id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            role ENUM('admin', 'user') NOT NULL,
-            user_id INT NOT NULL,
+            role ENUM('admin', 'user', 'system') NOT NULL,
+            user_id INT DEFAULT NULL,
             action VARCHAR(255) NOT NULL,
             details TEXT DEFAULT NULL,
             ip_address VARCHAR(45) DEFAULT NULL,
             logged_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    echo " ✓\n";
+    out(" ✓\n");
 } catch (Exception $e) {
-    echo " (exists or error) ✓\n";
+    out(" (exists or error) ✓\n");
 }
 
-echo "\n2. Running HeartbeatScheduler migrations...\n";
+out("\n2. Running HeartbeatScheduler migrations...\n");
 require_once __DIR__ . '/migrations/001_heartbeat_scheduler.php';
+require_once __DIR__ . '/migrations/002_schedule_manager_compat.php';
 
-echo "\n3. Creating demo data...\n";
+$heartbeatMigration = new Migration();
+$heartbeatOk = $heartbeatMigration->runAll();
+out($heartbeatOk ? "Heartbeat scheduler migration: ✓\n" : "Heartbeat scheduler migration: ✗\n");
+
+$compatMigration = new ScheduleManagerCompatMigration($pdo);
+$compatOk = $compatMigration->run();
+out($compatOk ? "Schedule manager compatibility migration: ✓\n" : "Schedule manager compatibility migration: ✗\n");
+
+out("\n3. Creating demo data...\n");
 
 // Create test user if not exists
-echo "   - test user...";
+out("   - test user...");
 try {
     $stmt = $pdo->prepare("SELECT id FROM users WHERE email = 'test@ghost.com' LIMIT 1");
     $stmt->execute();
@@ -290,17 +315,17 @@ try {
              VALUES ('Test User', 'test@ghost.com', ?, 'active')"
         );
         $stmt->execute([password_hash('test123', PASSWORD_BCRYPT)]);
-        echo " created";
+        out(" created");
     } else {
-        echo " exists";
+        out(" exists");
     }
 } catch (Exception $e) {
-    echo " error";
+    out(" error");
 }
-echo " ✓\n";
+out(" ✓\n");
 
 // Create test incubator if not exists
-echo "   - test incubator...";
+out("   - test incubator...");
 try {
     $stmt = $pdo->prepare("SELECT id FROM incubators WHERE incubator_name = 'Test Incubator' LIMIT 1");
     $stmt->execute();
@@ -319,17 +344,17 @@ try {
         );
         $stmt->execute([$incubator_id]);
         
-        echo " created (ID: {$incubator_id})";
+        out(" created (ID: {$incubator_id})");
     } else {
-        echo " exists";
+        out(" exists");
     }
 } catch (Exception $e) {
-    echo " error";
+    out(" error");
 }
-echo " ✓\n";
+out(" ✓\n");
 
 // Create test schedule if not exists
-echo "   - test schedule...";
+out("   - test schedule...");
 try {
     $stmt = $pdo->prepare("SELECT id FROM schedules WHERE title = 'Demo Auto-Start' LIMIT 1");
     $stmt->execute();
@@ -348,20 +373,20 @@ try {
                  VALUES (?, 'Demo Auto-Start', ?, '06:00:00', 'pending', 'turning', 37.5, 60.0, 21, 1, 'admin')"
             );
             $stmt->execute([$inc['id'], $tomorrow->format('Y-m-d')]);
-            echo " created";
+            out(" created");
         }
     } else {
-        echo " exists";
+        out(" exists");
     }
 } catch (Exception $e) {
-    echo " error";
+    out(" error");
 }
-echo " ✓\n";
+out(" ✓\n");
 
-echo "\n=== Setup Complete ===\n";
-echo "\nNext steps:\n";
-echo "1. Review /docs/HEARTBEAT_SCHEDULER_GUIDE.md for architecture\n";
-echo "2. Review /docs/INTEGRATION_GUIDE.md for integration examples\n";
-echo "3. Run tests: php tests/heartbeat_tests.php\n";
-echo "4. Update ESP8266 firmware to call /ajax/heartbeat.php\n";
-echo "5. Create schedules via admin dashboard\n\n";
+out("\n=== Setup Complete ===\n");
+out("\nNext steps:\n");
+out("1. Review /docs/HEARTBEAT_SCHEDULER_GUIDE.md for architecture\n");
+out("2. Review /docs/INTEGRATION_GUIDE.md for integration examples\n");
+out("3. Run tests: php tests/heartbeat_tests.php\n");
+out("4. Update ESP8266 firmware to call /ajax/heartbeat.php\n");
+out("5. Create schedules via admin dashboard\n\n");

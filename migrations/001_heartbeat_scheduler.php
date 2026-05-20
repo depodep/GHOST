@@ -194,8 +194,9 @@ class Migration {
     }
 }
 
-// Run migration
-$migration = new Migration();
-$success = $migration->runAll();
-
-exit($success ? 0 : 1);
+// Run migration only when this file is executed directly.
+if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
+    $migration = new Migration();
+    $success = $migration->runAll();
+    exit($success ? 0 : 1);
+}
