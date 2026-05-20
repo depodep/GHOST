@@ -1325,7 +1325,7 @@ if ($action === 'get_live_status') {
              FROM incubators i
              WHERE i.id = ?
                AND (
-                    i.user_id = ?
+                    i.owner_id = ?
                     OR EXISTS (
                         SELECT 1 FROM batches b
                         WHERE b.incubator_id = i.id AND b.user_id = ?
