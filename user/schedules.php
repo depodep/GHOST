@@ -370,7 +370,7 @@ foreach ($activeSessionRows as $sessionRow) {
 
                         <div class="mb-3">
                             <label class="form-label-ghost">🥚 Egg Count</label>
-                            <input type="number" min="1" step="1" class="form-control-ghost" id="as_egg_count"
+                            <input type="number" min="1" max="100" step="1" class="form-control-ghost" id="as_egg_count"
                                 placeholder="How many eggs?">
                             <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">This will be saved
                                 with the scheduled session.</div>
@@ -662,7 +662,7 @@ foreach ($activeSessionRows as $sessionRow) {
 
                         <div class="mb-3">
                             <label class="form-label-ghost">🥚 Egg Count</label>
-                            <input type="number" min="1" step="1" class="form-control-ghost" id="es2_egg_count"
+                            <input type="number" min="1" max="100" step="1" class="form-control-ghost" id="es2_egg_count"
                                 placeholder="How many eggs?">
                             <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">This will be saved
                                 with the scheduled session.</div>
@@ -926,6 +926,29 @@ function addSched() {
         showToast('Invalid turning interval.', 'error');
         return;
     }
+
+    // Egg count validation for update flow
+    const eggCountStrU = ($('#es2_egg_count').val() || '').toString().trim();
+    if (eggCountStrU === '') {
+        showToast('Please enter the egg count to schedule.', 'warning');
+        return;
+    }
+    const eggCountU = parseInt(eggCountStrU, 10);
+    if (!Number.isInteger(eggCountU) || eggCountU < 1 || eggCountU > 100) {
+        showToast('Egg count must be a whole number between 1 and 100.', 'error');
+        return;
+    }
+    // Egg count validation: required and must be between 1 and 100
+    const eggCountStr = ($('#as_egg_count').val() || '').toString().trim();
+    if (eggCountStr === '') {
+        showToast('Please enter the egg count to schedule.', 'warning');
+        return;
+    }
+    const eggCount = parseInt(eggCountStr, 10);
+    if (!Number.isInteger(eggCount) || eggCount < 1 || eggCount > 100) {
+        showToast('Egg count must be a whole number between 1 and 100.', 'error');
+        return;
+    }
     const newStart = new Date(startDate + ' ' + (startTime || '00:00'));
     if (isNaN(newStart.getTime()) || newStart.getTime() <= Date.now()) {
         showToast('Please choose a future start date and time.', 'error');
@@ -1020,6 +1043,8 @@ function resetScheduleDurationDefaults(prefix = 'as') {
     document.getElementById(`${prefix}_sw_interval`).value = 8;
     const titleInput = document.getElementById(`${prefix}_title`);
     if (titleInput) titleInput.value = '';
+    const eggInput = document.getElementById(`${prefix}_egg_count`);
+    if (eggInput) eggInput.value = '';
     // On add flow, always refresh to latest incubator presets.
     applyIncubatorPresets(prefix, true);
     updateSchedulePreview(prefix);

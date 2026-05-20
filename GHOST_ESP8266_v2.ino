@@ -45,7 +45,7 @@ const char* WIFI_PASSWORD = "Incubator2026";
 // ─────────────────────────────────────────────
 
 // const char* SERVER_IP     = "192.168.70.46";  
-const char* SERVER_IP     = " 192.168.70.46";  
+const char* SERVER_IP     = "10.114.35.46";
 const int   SERVER_PORT   = 80;               
 const char* SERVER_BASE_PATH = "/GHOST";       
 const int   INCUBATOR_ID  = 1;                 
@@ -215,14 +215,13 @@ const char* getCurrentModeLabel() {
 }
 
 void printRelayStates(const char* tag) {
-    Serial.printf("[%s] Relays: heater=%s fan=%s h1=%s h2=%s swing=%s exhaust=%s\n",
-        tag,
-        heaterGroupOn ? "ON" : "OFF",
-        heaterFanOn ? "ON" : "OFF",
-        heater1On ? "ON" : "OFF",
-        heater2On ? "ON" : "OFF",
-        eggswingOn ? "ON" : "OFF",
-        exhaustOn ? "ON" : "OFF");
+    Serial.print("["); Serial.print(tag); Serial.print("] Relays: heater=");
+    Serial.print(heaterGroupOn ? "ON" : "OFF");
+    Serial.print(" fan="); Serial.print(heaterFanOn ? "ON" : "OFF");
+    Serial.print(" h1="); Serial.print(heater1On ? "ON" : "OFF");
+    Serial.print(" h2="); Serial.print(heater2On ? "ON" : "OFF");
+    Serial.print(" swing="); Serial.print(eggswingOn ? "ON" : "OFF");
+    Serial.print(" exhaust="); Serial.println(exhaustOn ? "ON" : "OFF");
 }
 
 void printPollingStatus(const char* tag) {
@@ -688,6 +687,11 @@ void loop() {
             fetchParametersFromServer();
         }
 
+        if (now - lastIdleTestCommand >= COMMAND_INTERVAL) {
+            lastIdleTestCommand = now;
+            pollServerForPendingCommand();
+        }
+
         if (now - lastStatusPrint >= STATUS_INTERVAL) {
             lastStatusPrint = now;
             printPollingStatus("ACTUAL_POLL");
@@ -700,6 +704,10 @@ void loop() {
 
     // ── SESSION COMPLETED: keep heartbeating so the dashboard stays online ──
     if (sessionMode == MODE_COMPLETED) {
+        if (now - lastIdleTestCommand >= COMMAND_INTERVAL) {
+            lastIdleTestCommand = now;
+            pollServerForPendingCommand();
+        }
         if (heaterGroupOn) setHeater(false);
         if (heaterFanOn) setHeaterFan(false);
         if (exhaustOn) setExhaust(false);
@@ -1035,6 +1043,60 @@ void pollServerForTestCommandsIdle() {
         Serial.printf("[IDLE_POLL] Poll failed: %s\n", httpClient.errorToString(httpCode).c_str());
     }
     
+    httpClient.end();
+}
+
+// Poll server for pending manual command (normal operation)
+void pollServerForPendingCommand() {
+    String url = "http://";
+    url += SERVER_IP;
+    url += ":";
+    url += SERVER_PORT;
+    url += SERVER_BASE_PATH;
+    url += "/ajax/hardware_api.php";
+
+    String postData = "action=get_pending_command&incubator_id=" + String(INCUBATOR_ID);
+
+    httpClient.begin(wifiClient, url);
+    httpClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+    int httpCode = httpClient.POST(postData);
+
+    if (httpCode == HTTP_CODE_OK) {
+        String payload = httpClient.getString();
+        StaticJsonDocument<128> doc;
+        auto err = deserializeJson(doc, payload);
+        if (!err && doc.containsKey("command") ) {
+            String cmd = doc["command"] | "";
+            if (cmd.length() > 0) {
+                Serial.printf("[CMD] Pending command received: %s\n", cmd.c_str());
+                if (cmd == "all_off") {
+                    setHeater(false);
+                    setHeaterFan(false);
+                    setExhaust(false);
+                    setSwing(false);
+                    heaterManualOverride = false;
+                    swingManualOverride = false;
+                    sessionMode = MODE_COMPLETED;
+                    sessionStartedAt = 0;
+                    sessionEndsAt = 0;
+                    Serial.println(F("[CMD] all_off executed"));
+                } else if (cmd == "heater_on") {
+                    setHeater(true);
+                } else if (cmd == "heater_off") {
+                    setHeater(false);
+                } else if (cmd == "swing_on") {
+                    setSwing(true);
+                } else if (cmd == "swing_off") {
+                    setSwing(false);
+                }
+            }
+        } else if (!err && doc.containsKey("message")) {
+            Serial.printf("[CMD] Server message: %s\n", ((const char*)doc["message"]));
+        }
+    } else {
+        Serial.printf("[CMD] Poll pending command failed: HTTP %d\n", httpCode);
+    }
+
     httpClient.end();
 }
 void postTestDHTToServer() {
@@ -1375,6 +1437,8 @@ void fetchParametersFromServer() {
             hasValidParams = true;
         } else {
             Serial.println(F("[Server] JSON parse error"));
+            Serial.printf("[Server] Raw payload: %s\n", payload.c_str());
+            Serial.printf("[Server] JSON error: %s\n", err.c_str());
         }
     } else {
         Serial.printf("[Server] POST failed: %d (%s)\n", httpCode, httpClient.errorToString(httpCode).c_str());

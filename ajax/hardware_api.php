@@ -25,6 +25,7 @@
  */
 
 require_once '../includes/config.php';
+require_once '../includes/ScheduleChecker.php';
 
 // ── Auth — both ESP8266 and dashboard use this token ─────────
 define('DEVICE_TOKEN', 'ghost_hw_secret_2024');
@@ -204,14 +205,26 @@ function ensureBatchesSchema(PDO $pdo) {
 }
 
 function refreshScheduleState(PDO $pdo, int $incubator_id): array {
+    $checker = new ScheduleChecker($pdo, 5);
+    $checkerChanges = $checker->processPendingSchedules($incubator_id);
+
     ensureBatchesSchema($pdo);
     $scheduleGraceSeconds = 300; // 5 minutes
     $changes = [
         'failed_batches' => 0,
         'promoted_batches' => 0,
         'failed_schedules' => 0,
-        'promoted_schedules' => 0
+        'promoted_schedules' => 0,
+        'started_sessions' => 0,
+        'waiting_schedules' => 0
     ];
+
+    foreach ($checkerChanges as $key => $value) {
+        if (!isset($changes[$key])) {
+            $changes[$key] = 0;
+        }
+        $changes[$key] += (int)$value;
+    }
 
     $failedScheduleStmt = $pdo->prepare(
                 "SELECT s.id, s.batch_id, s.scheduled_date, s.scheduled_time
@@ -595,6 +608,22 @@ if ($action === 'device_status' || $action === 'device_heartbeat') {
     $activeBatch = getActiveIncubatingBatch($pdo, $incubator_id);
     $shouldPersistRelayState = $current_mode !== '' && $current_mode !== 'idle';
 
+    // If the server recently marked the session completed (e.g. Stop was pressed),
+    // ignore a subsequent heartbeat that posts current_mode='incubating' so the
+    // device doesn't immediately re-enable the session on the server. This
+    // prevents a race where the device posts old state right after Stop was pressed.
+    $recentlyCompleted = false;
+    if ($previousState && !empty($previousState['session_completed_at'])) {
+        $secs = time() - strtotime($previousState['session_completed_at']);
+        if ($secs >= 0 && $secs < 120) { // 2 minutes grace
+            $recentlyCompleted = true;
+        }
+    }
+    if (!$activeBatch && $recentlyCompleted && strtolower($current_mode) === 'incubating') {
+        error_log("[hardware_api] Ignoring device 'incubating' mode due to recent server stop (incubator={$incubator_id})");
+        $current_mode = 'idle';
+    }
+
     // Parse individual relay states from POST data.
     // In IDLE mode, we DO process the relay states from ESP8266 to properly turn off fans/heaters.
     // Only preserve old state in test mode (test_mode_relay_status table check handles this separately).
@@ -822,15 +851,24 @@ if ($action === 'get_device_config') {
     $nextBatchStmt->execute([$incubator_id]);
     $nextBatch = $nextBatchStmt->fetch();
 
-    $nextScheduleStmt = $pdo->prepare(
-        "SELECT duration_hours, description
-         FROM schedules
-         WHERE incubator_id = ? AND status = 'pending'
-         ORDER BY scheduled_date ASC, scheduled_time ASC
-         LIMIT 1"
-    );
-    $nextScheduleStmt->execute([$incubator_id]);
-    $nextSchedule = $nextScheduleStmt->fetch();
+    // Attempt to fetch next pending schedule. Wrap in try/catch because some
+    // deployments may not have the `duration_hours` column yet (migration
+    // missing). If the query fails, fall back to null so the API returns
+    // a safe JSON payload instead of a fatal error.
+    try {
+        $nextScheduleStmt = $pdo->prepare(
+            "SELECT duration_hours, description
+             FROM schedules
+             WHERE incubator_id = ? AND status = 'pending'
+             ORDER BY scheduled_date ASC, scheduled_time ASC
+             LIMIT 1"
+        );
+        $nextScheduleStmt->execute([$incubator_id]);
+        $nextSchedule = $nextScheduleStmt->fetch();
+    } catch (PDOException $e) {
+        error_log('[hardware_api] Failed to fetch next schedule: ' . $e->getMessage());
+        $nextSchedule = null;
+    }
 
     $scheduledBatchCountStmt = $pdo->prepare(
         "SELECT COUNT(*) FROM batches WHERE incubator_id = ? AND status = 'scheduled'"
@@ -1267,12 +1305,31 @@ if ($action === 'stop_session') {
         exit;
     }
 
-    // Mark session terminated
-    $pdo->prepare(
-        "UPDATE hardware_state
-            SET session_status = 'completed', session_completed_at = NOW(), current_mode = 'idle', last_server_sync = NOW()
-         WHERE incubator_id = ?"
-    )->execute([$incubator_id]);
+    try {
+        // Mark session terminated
+        $pdo->prepare(
+            "UPDATE hardware_state
+                SET session_status = 'completed', session_completed_at = NOW(), current_mode = 'idle', last_server_sync = NOW()
+             WHERE incubator_id = ?"
+        )->execute([$incubator_id]);
+
+        // Also mark associated batch as terminated and reset egg count
+        $pdo->prepare(
+            "UPDATE batches
+                SET status = 'terminated', terminated_at = NOW(), egg_count = 0
+             WHERE incubator_id = ? AND status = 'incubating'"
+        )->execute([$incubator_id]);
+
+        // Also insert an 'all_off' hardware command so ESP will stop relays promptly
+        $pdo->prepare(
+            "INSERT INTO hardware_commands (incubator_id, command, issued_at)
+             VALUES (?, 'all_off', NOW())"
+        )->execute([$incubator_id]);
+    } catch (PDOException $e) {
+        // Return error and include exception message for debugging
+        echo json_encode(['success' => false, 'message' => 'Failed to stop session: ' . $e->getMessage()]);
+        exit;
+    }
 
     // Also mark associated batch as terminated and reset egg count
     $pdo->prepare(
@@ -1292,7 +1349,12 @@ if ($action === 'stop_session') {
     $user_id = $role === 'admin' ? ($_SESSION['admin_id'] ?? 0) : ($_SESSION['user_id'] ?? 0);
     logActivity($role, $user_id, 'stop_session', "Session terminated for incubator #{$incubator_id}");
 
-    echo json_encode(['success' => true, 'message' => 'Session terminated']);
+    // Verify if any incubating batches remain for this incubator (debugging aid)
+    $cntStmt = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE incubator_id = ? AND status = 'incubating'");
+    $cntStmt->execute([$incubator_id]);
+    $remaining = (int)($cntStmt->fetchColumn() ?: 0);
+
+    echo json_encode(['success' => true, 'message' => 'Session terminated', 'remaining_incubating_batches' => $remaining]);
     exit;
 }
 
@@ -1384,6 +1446,30 @@ if ($action === 'get_live_status') {
     );
     $batchStmt->execute([$incubator_id]);
     $activeBatch = $batchStmt->fetch();
+
+    $incubatingCountStmt = $pdo->prepare(
+        "SELECT COUNT(*)
+         FROM batches
+         WHERE incubator_id = ? AND status = 'incubating'"
+    );
+    $incubatingCountStmt->execute([$incubator_id]);
+    $incubatingBatchCount = (int)$incubatingCountStmt->fetchColumn();
+
+    // If there are no incubating batches left, do not let stale hardware_state
+    // keep the dashboard pinned to RUNNING/INCUBATING after a stop/terminate.
+    if (!$activeBatch && $incubatingBatchCount === 0) {
+        if (($state['session_status'] ?? 'idle') === 'running' || ($state['current_mode'] ?? 'idle') === 'incubating') {
+            $state['session_status'] = !empty($state['session_completed_at']) ? 'completed' : 'idle';
+            $state['current_mode'] = 'idle';
+            $state['active_session_name'] = null;
+            $state['session_ends_at'] = null;
+            $pdo->prepare(
+                "UPDATE hardware_state
+                 SET session_status = ?, current_mode = 'idle', active_session_name = NULL, session_ends_at = NULL, last_server_sync = NOW()
+                 WHERE incubator_id = ?"
+            )->execute([$state['session_status'], $incubator_id]);
+        }
+    }
 
     if ($activeBatch) {
         $needsUpdate = false;
