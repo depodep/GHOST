@@ -1522,8 +1522,23 @@ if ($action === 'get_live_status') {
     $state['temperature'] = $state['display_temp'] ?? $state['temperature'];
     $state['humidity'] = $state['display_humidity'] ?? $state['humidity'];
 
-    $lastSeen = !empty($state['last_seen']) ? strtotime($state['last_seen']) : 0;
-    $online   = $lastSeen > 0 && (time() - $lastSeen) < 10;
+    $secondsSinceLastSeen = null;
+    if (!empty($state['seconds_since_last_seen'])) {
+        $secondsSinceLastSeen = (int)$state['seconds_since_last_seen'];
+    } elseif (!empty($state['last_seen'])) {
+        $ageStmt = $pdo->prepare(
+            "SELECT TIMESTAMPDIFF(SECOND, last_seen, NOW())
+             FROM hardware_state
+             WHERE incubator_id = ?
+             LIMIT 1"
+        );
+        $ageStmt->execute([$incubator_id]);
+        $ageValue = $ageStmt->fetchColumn();
+        if ($ageValue !== false && $ageValue !== null) {
+            $secondsSinceLastSeen = (int)$ageValue;
+        }
+    }
+    $online = $secondsSinceLastSeen !== null && $secondsSinceLastSeen >= 0 && $secondsSinceLastSeen < 10;
 
     $incubationDay = null;
     if (!empty($state['session_started_at'])) {
@@ -1606,6 +1621,7 @@ if ($action === 'get_live_status') {
         'active_batch_id'      => $activeBatchId,
         'active_session_name'  => $activeSessionName,
         'incubation_day'       => $incubationDay,
+        'seconds_since_last_seen' => $secondsSinceLastSeen,
         'turning_lockdown_active' => $lockdown['turning_lockdown_active'],
         'turning_lockdown_days_remaining' => $lockdown['turning_lockdown_days_remaining'],
         'temp_settings_id'     => $tempSettingsId ? (int)$tempSettingsId : null,
