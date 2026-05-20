@@ -31,6 +31,7 @@ class HeartbeatScheduler {
     private const EMERGENCY_SHUTDOWN = 5;         // degrees above target
     private const UNDERCOOL_THRESHOLD = 1;        // degrees below target
     private const MAX_DEVICE_OFFLINE_MINUTES = 60;
+    private const SCHEDULE_FAILURE_LOG_PATH = __DIR__ . '/../logs/schedule_start_failures.log';
 
     public function __construct(PDO $pdo, int $incubator_id, ?float $current_temp = null, ?float $current_humidity = null) {
         $this->pdo = $pdo;
@@ -71,7 +72,19 @@ class HeartbeatScheduler {
 
             if ($schedule) {
                 // Start the due schedule
-                return $this->startDueSchedule($schedule, $control);
+                try {
+                    return $this->startDueSchedule($schedule, $control);
+                } catch (Exception $scheduleEx) {
+                    $this->logFailedScheduleStart($schedule, $scheduleEx->getMessage());
+                    return [
+                        'success' => false,
+                        'status' => 'STOP',
+                        'reason' => 'schedule_start_failed',
+                        'schedule_id' => (int)($schedule['id'] ?? 0),
+                        'message' => 'Due schedule failed to start',
+                        'error' => $scheduleEx->getMessage()
+                    ];
+                }
             }
 
             // No schedule - return IDLE/STOP
@@ -612,6 +625,74 @@ class HeartbeatScheduler {
         } catch (Exception $e) {
             $this->pdo->rollBack();
             throw $e;
+        }
+    }
+
+    /**
+     * Persist reason why a due schedule failed to start.
+     */
+    private function logFailedScheduleStart(array $schedule, string $reason): void {
+        $scheduleId = (int)($schedule['id'] ?? 0);
+        $batchId = isset($schedule['batch_id']) && $schedule['batch_id'] !== null ? (int)$schedule['batch_id'] : null;
+        $scheduledAt = trim((string)($schedule['scheduled_date'] ?? '') . ' ' . (string)($schedule['scheduled_time'] ?? ''));
+        $details = sprintf(
+            "Schedule #%d failed to auto-start on incubator #%d (scheduled at %s): %s",
+            $scheduleId,
+            $this->incubator_id,
+            $scheduledAt !== '' ? $scheduledAt : 'N/A',
+            $reason
+        );
+
+        error_log('[HeartbeatScheduler] ' . $details);
+    $this->appendScheduleFailureLog('HeartbeatScheduler', $details);
+
+        try {
+            // Prefer storing reason in schedule notes when column exists.
+            $this->pdo->prepare(
+                "UPDATE schedules
+                 SET status = 'failed', notes = ?
+                 WHERE id = ? AND status = 'pending'"
+            )->execute([$details, $scheduleId]);
+        } catch (Exception $e) {
+            $this->pdo->prepare(
+                "UPDATE schedules
+                 SET status = 'failed'
+                 WHERE id = ? AND status = 'pending'"
+            )->execute([$scheduleId]);
+        }
+
+        if ($batchId) {
+            $this->pdo->prepare(
+                "UPDATE batches
+                 SET status = 'failed', terminated_at = COALESCE(terminated_at, NOW())
+                 WHERE id = ? AND status IN ('scheduled', 'incubating')"
+            )->execute([$batchId]);
+        }
+
+        $this->logger->logActivity('system', null, 'auto_schedule_start_failed', $details);
+    }
+
+    /**
+     * Append schedule failure details to a plain text log file.
+     */
+    private function appendScheduleFailureLog(string $source, string $details): void {
+        try {
+            $logDir = dirname(self::SCHEDULE_FAILURE_LOG_PATH);
+            if (!is_dir($logDir)) {
+                @mkdir($logDir, 0775, true);
+            }
+
+            $line = sprintf(
+                "[%s] [%s] incubator=%d %s%s",
+                date('Y-m-d H:i:s'),
+                $source,
+                $this->incubator_id,
+                $details,
+                PHP_EOL
+            );
+            @file_put_contents(self::SCHEDULE_FAILURE_LOG_PATH, $line, FILE_APPEND | LOCK_EX);
+        } catch (Exception $e) {
+            error_log('[HeartbeatScheduler] Failed to write text log: ' . $e->getMessage());
         }
     }
 

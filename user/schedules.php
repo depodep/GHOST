@@ -75,7 +75,7 @@ foreach ($settingsRows as $row) {
         'max_humidity' => $row['max_humidity']
     ];
 }
-$batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE user_id=? AND status='incubating'"); $batches_q->execute([$uid]); $myBatches = $batches_q->fetchAll();
+$batches_q = $pdo->prepare("SELECT id,batch_name,incubator_id FROM batches WHERE user_id=? AND status IN ('scheduled','incubating')"); $batches_q->execute([$uid]); $myBatches = $batches_q->fetchAll();
 $batchConflict_q = $pdo->prepare("SELECT id, batch_name, incubator_id, status, start_date, expected_hatch_date, notes FROM batches WHERE user_id=? AND status IN ('scheduled','incubating')");
 $batchConflict_q->execute([$uid]);
 $batchConflictRows = $batchConflict_q->fetchAll();
@@ -548,8 +548,8 @@ foreach ($activeSessionRows as $sessionRow) {
                     </div>
                 </div>
             </div>
-            <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button
-                    class="btn-ghost" onclick="addSched()"><i class="fas fa-save me-2"></i>Save</button></div>
+                <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button
+                    id="as_save_btn" class="btn-ghost" onclick="addSched()"><i class="fas fa-save me-2"></i>Save</button></div>
         </div>
     </div>
 </div>
@@ -845,8 +845,8 @@ foreach ($activeSessionRows as $sessionRow) {
                     </div>
                 </div>
             </div>
-            <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button
-                    class="btn-ghost" onclick="updateSched()"><i class="fas fa-save me-2"></i>Update</button></div>
+                <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button
+                    id="es2_save_btn" class="btn-ghost" onclick="updateSched()"><i class="fas fa-save me-2"></i>Update</button></div>
         </div>
     </div>
 </div>
@@ -854,6 +854,7 @@ foreach ($activeSessionRows as $sessionRow) {
 <script>
 const incubatorSettingPresets = <?= json_encode($settingsByIncubator, JSON_UNESCAPED_SLASHES) ?>;
 const scheduleConflictWindows = <?= json_encode($scheduleConflictWindows, JSON_UNESCAPED_SLASHES) ?>;
+const scheduleConflictNoticeState = { as: null, es2: null };
 
 function applyIncubatorPresets(prefix = 'as', force = false) {
     const incubatorSelect = document.getElementById(`${prefix}_incubator`);
@@ -927,17 +928,6 @@ function addSched() {
         return;
     }
 
-    // Egg count validation for update flow
-    const eggCountStrU = ($('#es2_egg_count').val() || '').toString().trim();
-    if (eggCountStrU === '') {
-        showToast('Please enter the egg count to schedule.', 'warning');
-        return;
-    }
-    const eggCountU = parseInt(eggCountStrU, 10);
-    if (!Number.isInteger(eggCountU) || eggCountU < 1 || eggCountU > 100) {
-        showToast('Egg count must be a whole number between 1 and 100.', 'error');
-        return;
-    }
     // Egg count validation: required and must be between 1 and 100
     const eggCountStr = ($('#as_egg_count').val() || '').toString().trim();
     if (eggCountStr === '') {
@@ -952,6 +942,19 @@ function addSched() {
     const newStart = new Date(startDate + ' ' + (startTime || '00:00'));
     if (isNaN(newStart.getTime()) || newStart.getTime() <= Date.now()) {
         showToast('Please choose a future start date and time.', 'error');
+        return;
+    }
+    const newEnd = new Date(newStart.getTime() + (((durationDays * 24 + durationHours) * 60 + durationMinutes) * 60 + durationSeconds) * 1000);
+    const conflict = detectScheduleConflict(
+        newStart.getTime(),
+        newEnd.getTime(),
+        $('#as_incubator').val() || '',
+        null,
+        $('#as_batch').val() || ''
+    );
+    if (conflict) {
+        setScheduleSaveButtonState('as', false, 'Resolve schedule conflict to continue');
+        showToast('Schedule conflict detected. Choose a different time range.', 'error');
         return;
     }
     showLoader('Saving Schedule…');
@@ -1109,11 +1112,40 @@ function updateSchedulePreview(prefix = 'as') {
                     : 'Schedule';
             conflictText.textContent = `Conflicts with ${conflictPrefix}: ${conflict.title}`;
             conflictSubtext.textContent = `Overlaps ${formatPreviewDateTime(conflict.start)} → ${formatPreviewDateTime(conflict.end)}`;
+            const conflictKey = `${conflict.source}:${conflict.id}:${conflict.start}:${conflict.end}`;
+            if (scheduleConflictNoticeState[prefix] !== conflictKey) {
+                scheduleConflictNoticeState[prefix] = conflictKey;
+                showToast('Schedule conflict detected. Choose a different time range.', 'error');
+            }
+            setScheduleSaveButtonState(prefix, false, 'Resolve schedule conflict to continue');
         } else {
             conflictBox.style.borderColor = 'rgba(34,197,94,.18)';
             conflictText.textContent = 'No conflict detected.';
             conflictSubtext.textContent = 'The selected time range is available.';
+            scheduleConflictNoticeState[prefix] = null;
+            setScheduleSaveButtonState(prefix, true);
         }
+    }
+}
+
+function setScheduleSaveButtonState(prefix = 'as', enabled = true, titleText = '') {
+    const btnId = prefix === 'es2' ? 'es2_save_btn' : 'as_save_btn';
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+
+    if (!btn.dataset.defaultHtml) {
+        btn.dataset.defaultHtml = btn.innerHTML;
+    }
+
+    const defaultLabel = prefix === 'es2' ? 'Update' : 'Save';
+    btn.disabled = !enabled;
+    btn.title = enabled ? '' : (titleText || 'Schedule conflict detected');
+    btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+    btn.style.pointerEvents = enabled ? '' : 'none';
+    if (enabled) {
+        btn.innerHTML = btn.dataset.defaultHtml || `<i class="fas fa-save me-2"></i>${defaultLabel}`;
+    } else {
+        btn.innerHTML = '<i class="fas fa-ban me-2"></i>Time Conflict';
     }
 }
 
@@ -1156,12 +1188,14 @@ function detectScheduleConflict(newStartMs, newEndMs, incubatorId = '', excludeS
 }
 
 document.getElementById('addSchedModal').addEventListener('show.bs.modal', function() {
+    scheduleConflictNoticeState.as = null;
     syncScheduleIncubator('as');
     resetScheduleDurationDefaults('as');
     syncScheduleIncubator('as');
 });
 
 document.getElementById('editSchedModal')?.addEventListener('show.bs.modal', function() {
+    scheduleConflictNoticeState.es2 = null;
     syncScheduleIncubator('es2');
     updateSchedulePreview('es2');
 });
@@ -1177,6 +1211,22 @@ function editSched(s) {
     $('#es2_action_type').val(s.action_type || 'turning');
     $('#es2_title').val(s.title);
     $('#es2_incubator').val(s.incubator_id || '');
+
+    if (s.batch_id) {
+        const batchSelect = document.getElementById('es2_batch');
+        if (batchSelect) {
+            const expectedValue = String(s.batch_id);
+            const hasOption = Array.from(batchSelect.options).some(option => String(option.value) === expectedValue);
+            if (!hasOption) {
+                const option = document.createElement('option');
+                option.value = expectedValue;
+                option.text = s.batch_name || `Batch #${expectedValue}`;
+                option.dataset.inc = s.incubator_id || '';
+                batchSelect.appendChild(option);
+            }
+        }
+    }
+
     $('#es2_batch').val(s.batch_id || '');
     $('#es2_duration_days').val(desc.duration_days ?? 21);
     $('#es2_duration_hours').val(desc.duration_hours ?? 0);
@@ -1216,6 +1266,17 @@ function updateSched() {
     }
     if (!Number.isFinite(turningInterval) || turningInterval < 0.01 || turningInterval > 24) {
         showToast('Invalid turning interval.', 'error');
+        return;
+    }
+
+    const eggCountStr = ($('#es2_egg_count').val() || '').toString().trim();
+    if (eggCountStr === '') {
+        showToast('Please enter the egg count to schedule.', 'warning');
+        return;
+    }
+    const eggCount = parseInt(eggCountStr, 10);
+    if (!Number.isInteger(eggCount) || eggCount < 1 || eggCount > 100) {
+        showToast('Egg count must be a whole number between 1 and 100.', 'error');
         return;
     }
 
@@ -1268,6 +1329,19 @@ function updateSched() {
     const now = new Date();
     if (newStart.getTime() <= now.getTime()) {
         showToast('Please choose a future start date and time.', 'error');
+        return;
+    }
+    const newEnd = new Date(newStart.getTime() + (((durationDays * 24 + durationHours) * 60 + durationMinutes) * 60 + durationSeconds) * 1000);
+    const conflict = detectScheduleConflict(
+        newStart.getTime(),
+        newEnd.getTime(),
+        $('#es2_incubator').val() || '',
+        $('#es2_id').val() || null,
+        $('#es2_batch').val() || ''
+    );
+    if (conflict) {
+        setScheduleSaveButtonState('es2', false, 'Resolve schedule conflict to continue');
+        showToast('Schedule conflict detected. Choose a different time range.', 'error');
         return;
     }
     if (origStatus === 'done' && newStart.getTime() > now.getTime()) {

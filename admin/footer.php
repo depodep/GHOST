@@ -22,7 +22,7 @@
 @keyframes rippleOut{from{width:0;height:0;opacity:1;transform:translate(-50%,-50%)}to{width:200px;height:200px;opacity:0;transform:translate(-50%,-50%)}}
 </style>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="../assets/vendor/chart/chart.js"></script>
 <script>
 // ── MOVE ALL BOOTSTRAP MODALS TO BODY (escape stacking context) ──
 document.addEventListener('DOMContentLoaded', function(){

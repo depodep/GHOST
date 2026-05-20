@@ -15,6 +15,7 @@ class ScheduleChecker {
     private bool $supportsScheduleNotes;
     private bool $supportsSystemActivityRole;
     private bool $supportsNullActivityUserId;
+    private const SCHEDULE_FAILURE_LOG_PATH = __DIR__ . '/../logs/schedule_start_failures.log';
 
     public function __construct(PDO $pdo, int $gracePeriodSeconds = 10) {
         $this->pdo = $pdo;
@@ -45,6 +46,7 @@ class ScheduleChecker {
 
             if ($this->isSessionAlreadyRunning($incId)) {
                 error_log(sprintf("[ScheduleChecker] Skipping schedule %d because a session is already running on incubator %d", $scheduleId, $incId));
+                $this->appendScheduleFailureLog($incId, sprintf('Schedule #%d skipped: session already running on incubator %d', $scheduleId, $incId));
                 if ($this->markScheduleFailed($scheduleId, "Session already running on incubator {$incId}")) {
                     $changes['failed_schedules']++;
                 }
@@ -60,6 +62,7 @@ class ScheduleChecker {
                 if ($this->isOutsideGracePeriod($device['last_seen'])) {
                     $reason = "Device offline after grace period ({$this->gracePeriodSeconds} sec)";
                     error_log(sprintf("[ScheduleChecker] Failing schedule %d because device offline and outside grace period", $scheduleId));
+                    $this->appendScheduleFailureLog($incId, sprintf('Schedule #%d failed: %s', $scheduleId, $reason));
                     if ($this->markScheduleFailed($scheduleId, $reason)) {
                         $changes['failed_schedules']++;
                     }
@@ -85,6 +88,7 @@ class ScheduleChecker {
                 error_log(sprintf("[ScheduleChecker] Created session for schedule=%d incubator=%d", $scheduleId, $incId));
             } else {
                 error_log(sprintf("[ScheduleChecker] Failed to create session record for schedule=%d incubator=%d", $scheduleId, $incId));
+                $this->appendScheduleFailureLog($incId, sprintf('Schedule #%d failed: could not create session record', $scheduleId));
             }
 
             if (!$created) {
@@ -364,5 +368,22 @@ class ScheduleChecker {
         );
         $stmt->execute([$table, $column]);
         return strtoupper((string)$stmt->fetchColumn()) === 'YES';
+    }
+
+    private function appendScheduleFailureLog(int $incubatorId, string $details): void {
+        $logDir = dirname(self::SCHEDULE_FAILURE_LOG_PATH);
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0775, true);
+        }
+
+        $line = sprintf(
+            "[%s] [ScheduleChecker] incubator=%d %s%s",
+            date('Y-m-d H:i:s'),
+            $incubatorId,
+            $details,
+            PHP_EOL
+        );
+
+        @file_put_contents(self::SCHEDULE_FAILURE_LOG_PATH, $line, FILE_APPEND | LOCK_EX);
     }
 }

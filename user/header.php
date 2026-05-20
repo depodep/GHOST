@@ -5,11 +5,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title><?= $pageTitle ?? 'Dashboard' ?> — GHOST User</title>
-<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
+<link href="../assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+<link href="../assets/vendor/fontawesome/all.min.css" rel="stylesheet">
+<script src="../assets/vendor/jquery/jquery-3.6.0.min.js"></script>
+<script src="../assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <style>
 :root{
   --ghost-dark:#0a0c10;--ghost-darker:#060709;--ghost-card:#111318;
