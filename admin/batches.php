@@ -4,7 +4,17 @@ $pageSubtitle = 'All egg batches across all incubators';
 $activePage = 'batches';
 require_once 'header.php';
 $pdo = getDB();
-$batches = $pdo->query("SELECT b.*, i.name as incubator_name, u.full_name as user_name FROM batches b JOIN incubators i ON b.incubator_id=i.id JOIN users u ON b.user_id=u.id ORDER BY b.created_at DESC")->fetchAll();
+$batches = $pdo->query(
+  "SELECT b.*, COALESCE(i.incubator_name, i.name, CONCAT('Incubator #', b.incubator_id)) as incubator_name,
+          COALESCE(u.full_name, CONCAT('User #', b.user_id)) as user_name,
+          hs.device_status,
+          hs.last_seen
+   FROM batches b
+   LEFT JOIN incubators i ON b.incubator_id=i.id
+   LEFT JOIN users u ON b.user_id=u.id
+   LEFT JOIN hardware_state hs ON hs.incubator_id = b.incubator_id
+   ORDER BY b.created_at DESC"
+)->fetchAll();
 $incubators = $pdo->query("SELECT id,name FROM incubators WHERE status='active'")->fetchAll();
 $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fetchAll();
 
@@ -104,7 +114,16 @@ function batchStatusTimeLabel(array $batch): string {
           <td style="font-weight:600;"><?= htmlspecialchars(displayBatchEggCount($b)) ?></td>
           <td style="font-size:.82rem;color:var(--ghost-muted);"><?= htmlspecialchars($startTime) ?></td>
           <td><div style="font-size:.85rem;"><?= date('M j, Y',strtotime($b['expected_hatch_date'])) ?></div><?php if($b['status']=='incubating'): ?><div style="font-size:.72rem;color:<?= $days<=3?'#f87171':'var(--ghost-muted)' ?>;"><?= $days>0?$days.' days':'Today!' ?></div><?php endif; ?></td>
-          <td><span class="badge-<?= $b['status'] ?>"><?= $b['status'] ?></span></td>
+          <td>
+            <?php
+              $waitingForDevice = !empty($b['waiting_for_device_until']) && strtotime($b['waiting_for_device_until']) > time();
+              if ($waitingForDevice):
+            ?>
+              <span class="badge-running">waiting_for_device</span>
+            <?php else: ?>
+              <span class="badge-<?= $b['status'] ?>"><?= $b['status'] ?></span>
+            <?php endif; ?>
+          </td>
           <td style="font-size:.82rem;color:var(--ghost-muted);">
             <?= htmlspecialchars($statusTimeDisplay) ?>
           </td>

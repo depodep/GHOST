@@ -37,6 +37,7 @@ class ScheduleChecker {
         ];
 
         $this->ensureSessionSchema();
+        $this->ensureBatchColumns();
 
         foreach ($this->getDuePendingSchedules($incubatorId) as $schedule) {
             error_log(sprintf("[ScheduleChecker] Evaluating schedule id=%d incubator=%d batch=%s scheduled=%s %s", (int)$schedule['schedule_id'], (int)$schedule['incubator_id'], $schedule['batch_id'] ?? 'NULL', $schedule['scheduled_date'] ?? 'N/A', $schedule['scheduled_time'] ?? 'N/A'));
@@ -70,7 +71,38 @@ class ScheduleChecker {
                         $changes['failed_batches']++;
                     }
                 } else {
-                    $changes['waiting_schedules']++;
+                    // Device is offline but within grace window -> mark batch as waiting_for_device
+                    if ($batchId) {
+                        try {
+                            $stmt = $this->pdo->prepare("SELECT waiting_for_device_until FROM batches WHERE id = ? LIMIT 1");
+                            $stmt->execute([$batchId]);
+                            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                            if (!$row || empty($row['waiting_for_device_until'])) {
+                                $stmt2 = $this->pdo->prepare("UPDATE batches SET waiting_for_device_until = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ?");
+                                $stmt2->execute([$this->gracePeriodSeconds, $batchId]);
+                                $changes['waiting_schedules']++;
+                            } else {
+                                $waitingTs = strtotime($row['waiting_for_device_until']);
+                                if ($waitingTs !== false && $waitingTs <= time()) {
+                                    $reason = "Device did not come online within grace period ({$this->gracePeriodSeconds} sec)";
+                                    $this->appendScheduleFailureLog($incId, sprintf('Schedule #%d failed: %s', $scheduleId, $reason));
+                                    if ($this->markScheduleFailed($scheduleId, $reason)) {
+                                        $changes['failed_schedules']++;
+                                    }
+                                    if ($batchId && $this->markBatchFailed($batchId)) {
+                                        $changes['failed_batches']++;
+                                    }
+                                } else {
+                                    $changes['waiting_schedules']++;
+                                }
+                            }
+                        } catch (Exception $e) {
+                            error_log('[ScheduleChecker] waiting_for_device handling error: ' . $e->getMessage());
+                            $changes['waiting_schedules']++;
+                        }
+                    } else {
+                        $changes['waiting_schedules']++;
+                    }
                 }
                 continue;
             }
@@ -254,7 +286,7 @@ class ScheduleChecker {
     private function markBatchIncubating(int $batchId): bool {
         $stmt = $this->pdo->prepare(
             "UPDATE batches
-             SET status = 'incubating'
+             SET status = 'incubating', waiting_for_device_until = NULL
              WHERE id = ? AND status = 'scheduled'"
         );
         return $stmt->execute([$batchId]) && $stmt->rowCount() > 0;
@@ -312,6 +344,21 @@ class ScheduleChecker {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         );
     }
+
+        /**
+         * Ensure batches has waiting_for_device_until column used for waiting state.
+         */
+        private function ensureBatchColumns(): void {
+            $exists = $this->columnExists('batches', 'waiting_for_device_until');
+            if (!$exists) {
+                try {
+                    $this->pdo->exec("ALTER TABLE batches ADD COLUMN waiting_for_device_until TIMESTAMP NULL DEFAULT NULL");
+                } catch (Exception $e) {
+                    // If ALTER fails (permissions), ignore - runtime logic will still work without persistent column
+                    error_log('[ScheduleChecker] Could not add waiting_for_device_until column: ' . $e->getMessage());
+                }
+            }
+        }
 
     private function extractDurationHours(array $schedule): ?float {
         if (isset($schedule['duration_hours']) && $schedule['duration_hours'] !== null && $schedule['duration_hours'] !== '') {

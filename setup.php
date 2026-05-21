@@ -324,64 +324,11 @@ try {
 }
 out(" ✓\n");
 
-// Create test incubator if not exists
-out("   - test incubator...");
-try {
-    $stmt = $pdo->prepare("SELECT id FROM incubators WHERE incubator_name = 'Test Incubator' LIMIT 1");
-    $stmt->execute();
-    if (!$stmt->fetch()) {
-        $stmt = $pdo->prepare(
-            "INSERT INTO incubators (user_id, incubator_name, location, status)
-             VALUES (1, 'Test Incubator', 'Lab', 'active')"
-        );
-        $stmt->execute();
-        $incubator_id = $pdo->lastInsertId();
-        
-        // Create temperature settings
-        $stmt = $pdo->prepare(
-            "INSERT INTO temperature_settings (incubator_id, target_temperature, target_humidity)
-             VALUES (?, 37.5, 60.0)"
-        );
-        $stmt->execute([$incubator_id]);
-        
-        out(" created (ID: {$incubator_id})");
-    } else {
-        out(" exists");
-    }
-} catch (Exception $e) {
-    out(" error");
-}
-out(" ✓\n");
+// Create test incubator if not exists (disabled)
+out("   - test incubator... skipped (demo creation disabled) \n");
 
-// Create test schedule if not exists
-out("   - test schedule...");
-try {
-    $stmt = $pdo->prepare("SELECT id FROM schedules WHERE title = 'Demo Auto-Start' LIMIT 1");
-    $stmt->execute();
-    if (!$stmt->fetch()) {
-        // Get first incubator ID
-        $stmt = $pdo->prepare("SELECT id FROM incubators LIMIT 1");
-        $stmt->execute();
-        $inc = $stmt->fetch();
-        
-        if ($inc) {
-            $tomorrow = (new DateTime())->modify('+1 day');
-            $stmt = $pdo->prepare(
-                "INSERT INTO schedules 
-                 (incubator_id, title, scheduled_date, scheduled_time, status, action_type,
-                  target_temp, target_humidity, duration_hours, created_by_id, created_by_role)
-                 VALUES (?, 'Demo Auto-Start', ?, '06:00:00', 'pending', 'turning', 37.5, 60.0, 21, 1, 'admin')"
-            );
-            $stmt->execute([$inc['id'], $tomorrow->format('Y-m-d')]);
-            out(" created");
-        }
-    } else {
-        out(" exists");
-    }
-} catch (Exception $e) {
-    out(" error");
-}
-out(" ✓\n");
+// Create test schedule if not exists (disabled)
+out("   - test schedule... skipped (demo creation disabled) \n");
 
 out("\n=== Setup Complete ===\n");
 out("\nNext steps:\n");

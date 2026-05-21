@@ -99,12 +99,42 @@ function adminHasConflict(array $existingWindows, int $newStart, int $newEnd) {
   return null;
 }
 
+function adminBuildScheduleDescription(array $source): string {
+  $durationDays = isset($source['duration_days']) ? (int)$source['duration_days'] : 21;
+  $durationHours = isset($source['duration_hours']) ? (int)$source['duration_hours'] : 0;
+  $durationMinutes = isset($source['duration_minutes']) ? (int)$source['duration_minutes'] : 0;
+  $durationSeconds = isset($source['duration_seconds']) ? (int)$source['duration_seconds'] : 0;
+  $sessionDurationSec = ($durationDays * 86400) + ($durationHours * 3600) + ($durationMinutes * 60) + $durationSeconds;
+
+  $description = [
+    'start_date' => (string)($source['start_date'] ?? $source['date'] ?? ''),
+    'start_time' => (string)($source['start_time'] ?? $source['time'] ?? ''),
+    'duration_days' => $durationDays,
+    'duration_hours' => $durationHours,
+    'duration_minutes' => $durationMinutes,
+    'duration_seconds' => $durationSeconds,
+    'session_duration_sec' => max(1, $sessionDurationSec),
+    'target_temp' => ($source['target_temp'] ?? '') !== '' ? (float)$source['target_temp'] : null,
+    'min_temp' => ($source['min_temp'] ?? '') !== '' ? (float)$source['min_temp'] : null,
+    'max_temp' => ($source['max_temp'] ?? '') !== '' ? (float)$source['max_temp'] : null,
+    'target_humidity' => ($source['target_humidity'] ?? '') !== '' ? (float)$source['target_humidity'] : null,
+    'min_humidity' => ($source['min_humidity'] ?? '') !== '' ? (float)$source['min_humidity'] : null,
+    'max_humidity' => ($source['max_humidity'] ?? '') !== '' ? (float)$source['max_humidity'] : null,
+    'swing_duration_sec' => ($source['swing_duration_sec'] ?? '') !== '' ? (int)$source['swing_duration_sec'] : 30,
+    'turning_interval' => ($source['turning_interval'] ?? '') !== '' ? (float)$source['turning_interval'] : null,
+    'egg_count' => ($source['egg_count'] ?? '') !== '' ? (int)$source['egg_count'] : null,
+    'notes' => trim((string)($source['notes'] ?? ''))
+  ];
+
+  return json_encode($description, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
 if($action === 'add'){
   $title = trim($_POST['title']??'');
   $incubator_id = (int)($_POST['incubator_id']??0);
   $batch_id = !empty($_POST['batch_id']) ? (int)$_POST['batch_id'] : null;
-  $date = $_POST['date']??'';
-  $time = $_POST['time']??'';
+  $date = $_POST['start_date'] ?? ($_POST['date'] ?? '');
+  $time = $_POST['start_time'] ?? ($_POST['time'] ?? '');
   $action_type = $_POST['action_type']??'turning';
   $target_temp = !empty($_POST['target_temp']) ? (float)$_POST['target_temp'] : null;
   $target_humidity = !empty($_POST['target_humidity']) ? (float)$_POST['target_humidity'] : null;
@@ -115,8 +145,9 @@ if($action === 'add'){
   if (!$startAt) {
     jsonResponse(['success' => false, 'message' => 'Invalid start date or time']);
   }
+  $descriptionJson = adminBuildScheduleDescription($_POST);
   $durationSeconds = adminScheduleDurationSeconds([
-    'description' => $notes,
+    'description' => $descriptionJson,
     'duration_hours' => $_POST['duration_hours'] ?? null
   ]);
   $newStart = $startAt->getTimestamp();
@@ -149,8 +180,21 @@ if($action === 'add'){
     }
   }
 
-  $stmt = $pdo->prepare("INSERT INTO schedules (incubator_id,batch_id,title,description,scheduled_date,scheduled_time,action_type,target_temp,target_humidity,status,created_by_role,created_by_id) VALUES (?,?,?,?,?,?,?,?,?,?, 'admin',?)");
-  $stmt->execute([$incubator_id,$batch_id,$title,$notes,$date,$time,$action_type,$target_temp,$target_humidity,$statusToInsert,$_SESSION['admin_id']]);
+  $stmt = $pdo->prepare("INSERT INTO schedules (incubator_id,batch_id,title,description,scheduled_date,scheduled_time,action_type,target_temp,target_humidity,status,created_by_role,created_by_id,duration_hours) VALUES (?,?,?,?,?,?,?,?,?,?, 'admin',?,?,?)");
+  $stmt->execute([
+    $incubator_id,
+    $batch_id,
+    $title,
+    $descriptionJson,
+    $date,
+    $time,
+    $action_type,
+    $target_temp,
+    $target_humidity,
+    $statusToInsert,
+    $_SESSION['admin_id'],
+    round($durationSeconds / 3600, 4)
+  ]);
   logActivity('admin',$_SESSION['admin_id'],'Add Schedule',"Added: $title (status={$statusToInsert})");
 
   if ($statusToInsert === 'failed' && $batch_id) {
@@ -163,11 +207,11 @@ if($action === 'add'){
 if($action === 'update'){
   $id = (int)($_POST['id']??0);
   $title = trim($_POST['title']??'');
-  $date = $_POST['date']??'';
-  $time = $_POST['time']??'';
+  $date = $_POST['start_date'] ?? ($_POST['date'] ?? '');
+  $time = $_POST['start_time'] ?? ($_POST['time'] ?? '');
   $action_type = $_POST['action_type']??'turning';
   $status = $_POST['status']??'pending';
-  $notes = trim($_POST['notes']??'');
+  $descriptionJson = adminBuildScheduleDescription($_POST);
   $existingStmt = $pdo->prepare("SELECT incubator_id, batch_id FROM schedules WHERE id=? LIMIT 1");
   $existingStmt->execute([$id]);
   $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
@@ -178,7 +222,7 @@ if($action === 'update'){
   if (!$startAt) {
     jsonResponse(['success' => false, 'message' => 'Invalid start date or time']);
   }
-  $durationSeconds = adminScheduleDurationSeconds(['description' => $notes]);
+  $durationSeconds = adminScheduleDurationSeconds(['description' => $descriptionJson]);
   $newStart = $startAt->getTimestamp();
   $newEnd = $newStart + $durationSeconds;
   $conflict = adminHasConflict(adminExistingScheduleWindows($pdo, $incubator_id, $id), $newStart, $newEnd);
@@ -186,8 +230,19 @@ if($action === 'update'){
     jsonResponse(['success' => false, 'message' => 'Schedule conflict detected. Another scheduled session overlaps this time range.']);
   }
 
-  $stmt = $pdo->prepare("UPDATE schedules SET title=?,scheduled_date=?,scheduled_time=?,action_type=?,status=?,description=? WHERE id=?");
-  $stmt->execute([$title,$date,$time,$action_type,$status,$notes,$id]);
+  $stmt = $pdo->prepare("UPDATE schedules SET title=?,scheduled_date=?,scheduled_time=?,action_type=?,status=?,description=?,target_temp=?,target_humidity=?,duration_hours=? WHERE id=?");
+  $stmt->execute([
+    $title,
+    $date,
+    $time,
+    $action_type,
+    $status,
+    $descriptionJson,
+    ($_POST['target_temp'] ?? '') !== '' ? (float)$_POST['target_temp'] : null,
+    ($_POST['target_humidity'] ?? '') !== '' ? (float)$_POST['target_humidity'] : null,
+    round($durationSeconds / 3600, 4),
+    $id
+  ]);
   logActivity('admin',$_SESSION['admin_id'],'Update Schedule',"Updated schedule ID: $id");
   jsonResponse(['success'=>true]);
 }

@@ -1,5 +1,51 @@
 <?php
 require_once 'includes/config.php';
+// Auto-start schedule runner if not already running (checks last-run timestamp)
+// - Uses scripts/run_schedules.last to detect runner activity
+// - If last-run is stale (> 45s) will attempt to start the Python runner in background
+$runner_last = __DIR__ . '/scripts/run_schedules.last';
+$runner_interval = 30; // seconds between runs expected
+$runner_buffer = 15; // extra seconds buffer
+  // Prefer project's virtualenv Python if present
+  $venv_win = __DIR__ . DIRECTORY_SEPARATOR . '.venv' . DIRECTORY_SEPARATOR . 'Scripts' . DIRECTORY_SEPARATOR . 'python.exe';
+  $venv_unix = __DIR__ . DIRECTORY_SEPARATOR . '.venv' . DIRECTORY_SEPARATOR . 'bin' . DIRECTORY_SEPARATOR . 'python';
+  $default_python = 'python';
+  if (is_file($venv_win)) {
+    $python_bin = $venv_win;
+  } elseif (is_file($venv_unix)) {
+    $python_bin = $venv_unix;
+  } else {
+    $python_bin = $default_python;
+  }
+  $python_bin_escaped = escapeshellarg($python_bin);
+  $script_path = __DIR__ . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'run_schedules.py';
+  $script_path_escaped = escapeshellarg($script_path);
+  $runner_cmd = $python_bin_escaped . ' ' . $script_path_escaped . ' --interval 30 --grace 180';
+try {
+  $needStart = true;
+  if (file_exists($runner_last)) {
+    $mtime = filemtime($runner_last);
+    if ($mtime !== false && (time() - $mtime) <= ($runner_interval + $runner_buffer)) {
+      $needStart = false; // still recently ran
+    }
+  }
+  if ($needStart) {
+    // Start background process based on OS
+    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+      // Windows: use start /B
+      $cmd = 'start /B "" ' . $runner_cmd;
+      pclose(popen($cmd, 'r'));
+    } else {
+      // Unix: background exec
+      $cmd = $runner_cmd . ' > /dev/null 2>&1 &';
+      exec($cmd);
+    }
+    // touch last-run file to avoid rapid restarts
+    @file_put_contents($runner_last, date('c'));
+  }
+} catch (Exception $e) {
+  // non-fatal
+}
 
 if (isAdminLoggedIn()) {
   header('Location: ' . BASE_URL . '/admin/dashboard.php');
