@@ -12,7 +12,7 @@ $statusFilter = trim((string)($_GET['status'] ?? ''));
 require_once 'header.php';
 
 $batches = $pdo->query(
-  "SELECT b.*, COALESCE(i.incubator_name, i.name, CONCAT('Incubator #', b.incubator_id)) as incubator_name,
+  "SELECT b.*, COALESCE(i.name, CONCAT('Incubator #', b.incubator_id)) as incubator_name,
           COALESCE(u.full_name, CONCAT('User #', b.user_id)) as user_name,
           hs.device_status,
           hs.last_seen

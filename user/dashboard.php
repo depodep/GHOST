@@ -10,6 +10,9 @@ $uid = $_SESSION['user_id'];
 $s = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE user_id=? AND status='incubating'");
 $s->execute([$uid]); $myBatches = $s->fetchColumn();
 
+$s = $pdo->prepare("SELECT COALESCE(SUM(egg_count),0) FROM batches WHERE user_id=?");
+$s->execute([$uid]); $totalEggs = $s->fetchColumn();
+
 $s = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE user_id=? AND status='completed'");
 $s->execute([$uid]); $completedBatches = $s->fetchColumn();
 
@@ -196,7 +199,8 @@ function batchStatusTimeLabel(array $batch): string {
         <div class="stat-card">
             <div class="stat-icon">🥚</div>
             <div class="stat-label">Total Eggs</div>
-            <div class="stat-val blue"><?= number_format($myEggs) ?></div>
+            <div class="stat-val blue"><?= number_format($totalEggs) ?></div>
+            <div class="stat-badge up">Current eggs incubating: <?= number_format($myEggs) ?></div>
         </div>
     </div>
     <div class="col-6 col-lg-2">
@@ -516,7 +520,7 @@ function batchStatusTimeLabel(array $batch): string {
                         <div class="monitor-value" id="monitorLastSync">—</div>
                     </div>
                     <div class="monitor-item">
-                        <div class="monitor-label">Session Status</div>
+                        <div class="monitor-label">Device Mode</div>
                         <div class="monitor-value" id="monitorSessionStatus">—</div>
                     </div>
                     <div class="monitor-item">
@@ -731,6 +735,25 @@ function batchStatusTimeLabel(array $batch): string {
                                     style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">
                                     Location</div>
                                 <div style="font-weight:700;color:white;font-size:.9rem;" id="inc_info_loc">—</div>
+                            </div>
+                        </div>
+
+                        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:20px;">
+                            <div
+                                style="padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);">
+                                <div
+                                    style="font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ghost-muted);">
+                                    Total Eggs</div>
+                                <div style="margin-top:6px;font-size:1.15rem;font-weight:800;color:white;">
+                                    <?= number_format($totalEggs) ?></div>
+                            </div>
+                            <div
+                                style="padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);">
+                                <div
+                                    style="font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ghost-muted);">
+                                    Current Eggs Incubating</div>
+                                <div style="margin-top:6px;font-size:1.15rem;font-weight:800;color:#22c55e;">
+                                    <?= number_format($myEggs) ?></div>
                             </div>
                         </div>
 
@@ -1713,6 +1736,14 @@ function setModePill(state) {
     pill.textContent = label;
 }
 
+function formatModeLabel(mode) {
+    const normalized = String(mode || 'idle').toLowerCase();
+    if (normalized === 'incubating') return 'Incubating';
+    if (normalized === 'hatching') return 'Hatching';
+    if (normalized === 'completed') return 'Completed';
+    return 'Idle';
+}
+
 function setDeviceModeBadge(mode, isOnline) {
     const normalized = String(mode || 'idle').toLowerCase();
     const active = isOnline && (normalized === 'incubating' || normalized === 'hatching');
@@ -1837,10 +1868,7 @@ function fetchLiveStatus() {
             setText('monitorLastSync', formatDisplayTime(res.last_server_sync || res.last_seen));
 
             // Update session status and end time
-            const modeLabel = (res.session_status === 'running') ? 'INCUBATING' : (res.current_mode || 'idle')
-                .toUpperCase();
-            const onlineLabel = res.online ? 'ONLINE' : 'OFFLINE';
-            setText('monitorSessionStatus', `${onlineLabel} | ${modeLabel}`);
+            setText('monitorSessionStatus', formatModeLabel(res.current_mode || (res.session_status === 'running' ? 'incubating' : 'idle')));
             // Prefer session number (how many batches/sessions have been created) for user-friendly label
             if (res.active_batch_id) {
                 setText('monitorParamsId', `Batch #${res.active_batch_id}`);
@@ -1880,7 +1908,7 @@ function fetchLiveStatus() {
             setText('monitorSessionName', '—');
             setText('monitorMode', '—');
             setText('monitorLastSync', '—');
-            setText('monitorSessionStatus', '—');
+            setText('monitorSessionStatus', 'Offline');
             setText('monitorParamsId', '—');
             setText('monitorSessionEnds', '—');
             document.getElementById('heater1Dot').className = 'status-dot';
@@ -2159,6 +2187,7 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
     const err = document.getElementById('startEggError');
     const startNowBtn = document.getElementById('startNowBtn');
     const startScheduleBtn = document.getElementById('startScheduleBtn');
+    const deviceOnline = !liveSessionState || liveSessionState.deviceOnline !== false;
 
     let baseMessage = message;
     if (body) body.textContent = baseMessage;
@@ -2175,6 +2204,14 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
     if (schedSection) schedSection.style.display = 'none';
     if (startNowBtn) startNowBtn.classList.remove('disabled');
     if (startScheduleBtn) startScheduleBtn.classList.remove('active');
+
+    if (startNowBtn) {
+        startNowBtn.disabled = !deviceOnline;
+        startNowBtn.title = deviceOnline ? '' : 'Device is offline';
+        if (!deviceOnline) {
+            startNowBtn.classList.add('disabled');
+        }
+    }
 
     // Set default scheduled start time to NOW (current date/time)
     if (schedInput) {
@@ -2230,6 +2267,13 @@ function showStartConfirm(message, defaultEggCount, onConfirm) {
 
     function startNowHandler(event) {
         if (event) event.preventDefault();
+        if (!deviceOnline) {
+            if (err) {
+                err.textContent = 'Device is offline. Start Now is disabled.';
+                err.style.display = 'block';
+            }
+            return;
+        }
         const eggCount = getEggCount();
         if (!eggCount) return;
 
@@ -2354,6 +2398,11 @@ function startSessionQuick() {
     if (!incId) {
         showFb('No incubator selected', 'warning');
         console.error('[startSessionQuick] ERROR: No incubator selected');
+        return;
+    }
+
+    if (liveSessionState.deviceOnline === false) {
+        showFb('Device is offline. Start Now is disabled.', 'warning');
         return;
     }
 

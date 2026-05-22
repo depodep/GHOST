@@ -1818,14 +1818,9 @@ bool fetchParametersFromServer() {
                 const unsigned long sessionDurationMs = 21UL * 24UL * 3600UL * 1000UL;  // 21 days in milliseconds
                 sessionEndsAt = sessionStartedAt + sessionDurationMs;
                 
-                // Reset swing schedule so first turn starts immediately
-                // Set it to the past so the interval check is met on the next loop
-                if (savedTurningInt > 0.0f) {
-                    const unsigned long intervalMs = (unsigned long)(savedTurningInt * 3600.0f * 1000.0f);
-                    lastSwingScheduledAt = nowMs - intervalMs;
-                } else {
-                    lastSwingScheduledAt = 0;
-                }
+                // Start the schedule clock now so the first automatic swing waits
+                // for the configured interval instead of firing immediately.
+                lastSwingScheduledAt = nowMs;
                 
                 setHeater(true);
                 Serial.printf("[Mode] Switched to INCUBATING (session active, ends in ~21 days)\n");

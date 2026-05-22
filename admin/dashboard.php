@@ -11,7 +11,8 @@ $totalIncubators  = $pdo->query("SELECT COUNT(*) FROM incubators")->fetchColumn(
 $activeIncubators = $pdo->query("SELECT COUNT(*) FROM incubators WHERE status='active'")->fetchColumn();
 $totalBatches     = $pdo->query("SELECT COUNT(*) FROM batches WHERE status='incubating'")->fetchColumn();
 $totalUsers       = $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
-$totalEggs        = $pdo->query("SELECT COALESCE(SUM(egg_count),0) FROM batches WHERE status='incubating'")->fetchColumn();
+$totalEggs        = $pdo->query("SELECT COALESCE(SUM(egg_count),0) FROM batches")->fetchColumn();
+$incubatingEggs   = $pdo->query("SELECT COALESCE(SUM(egg_count),0) FROM batches WHERE status='incubating'")->fetchColumn();
 $unreadAlerts     = $pdo->query("SELECT COUNT(*) FROM alerts WHERE is_read=0")->fetchColumn();
 
 // ── Data ──────────────────────────────────────────────────
@@ -64,7 +65,7 @@ $tempLogs = array_reverse($pdo->query(
     <div class="stat-card">
       <div class="stat-icon">🫧</div><div class="stat-label">Total Eggs</div>
       <div class="stat-val amber"><?= number_format($totalEggs) ?></div>
-      <div class="stat-badge up">Current eggs incubating</div>
+      <div class="stat-badge up">Current eggs incubating: <?= number_format($incubatingEggs) ?></div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
@@ -196,7 +197,7 @@ $tempLogs = array_reverse($pdo->query(
           <div class="monitor-item"><div class="monitor-label">Active Session Name</div><div class="monitor-value" id="monitorSessionName">—</div></div>
           <div class="monitor-item"><div class="monitor-label">Current Running Mode</div><div class="monitor-value" id="monitorMode">—</div></div>
           <div class="monitor-item"><div class="monitor-label">Last Server Update</div><div class="monitor-value" id="monitorLastSync">—</div></div>
-          <div class="monitor-item"><div class="monitor-label">Session Status</div><div class="monitor-value" id="monitorSessionStatus">—</div></div>
+          <div class="monitor-item"><div class="monitor-label">Device Mode</div><div class="monitor-value" id="monitorSessionStatus">—</div></div>
           <div class="monitor-item"><div class="monitor-label">Session</div><div class="monitor-value" id="monitorParamsId">—</div></div>
           <div class="monitor-item"><div class="monitor-label">Session Ends At</div><div class="monitor-value" id="monitorSessionEnds" style="font-size:.9rem;">—</div></div>
         </div>
@@ -312,6 +313,17 @@ $tempLogs = array_reverse($pdo->query(
           <div><div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Incubator</div><div style="font-weight:700;color:white;font-size:.9rem;" id="inc_info_name">—</div></div>
           <div><div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Capacity</div><div style="font-weight:700;color:var(--ghost-amber);font-size:.9rem;" id="inc_info_cap">—</div></div>
           <div><div style="font-size:.7rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.06em;">Location</div><div style="font-weight:700;color:white;font-size:.9rem;" id="inc_info_loc">—</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:20px;">
+          <div style="padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);">
+            <div style="font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ghost-muted);">Total Eggs</div>
+            <div style="margin-top:6px;font-size:1.15rem;font-weight:800;color:white;"><?= number_format($totalEggs) ?></div>
+          </div>
+          <div style="padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);">
+            <div style="font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ghost-muted);">Current Eggs Incubating</div>
+            <div style="margin-top:6px;font-size:1.15rem;font-weight:800;color:#22c55e;"><?= number_format($incubatingEggs) ?></div>
+          </div>
         </div>
 
 
@@ -1027,6 +1039,14 @@ function setModePill(state) {
   pill.textContent = label;
 }
 
+function formatModeLabel(mode) {
+  const normalized = String(mode || 'idle').toLowerCase();
+  if (normalized === 'incubating') return 'Incubating';
+  if (normalized === 'hatching') return 'Hatching';
+  if (normalized === 'completed') return 'Completed';
+  return 'Idle';
+}
+
 function setConnectionPill(state) {
   const pill = document.getElementById('monitorWifi');
   if (!pill) return;
@@ -1139,7 +1159,7 @@ function fetchLiveStatus() {
       setText('monitorSessionName', res.active_session_name || '—');
       setText('monitorMode', res.current_mode || 'Idle');
       setText('monitorLastSync', formatDisplayTime(res.last_server_sync || res.last_seen));
-      setText('monitorSessionStatus', res.session_status || '—');
+      setText('monitorSessionStatus', formatModeLabel(res.current_mode || (res.session_status === 'running' ? 'incubating' : 'idle')));
       setText('monitorSessionEnds', formatDisplayTime(res.session_ends_at));
 
       if (res.active_batch_id) {
@@ -1162,7 +1182,7 @@ function fetchLiveStatus() {
       setText('monitorSessionName', '—');
       setText('monitorMode', '—');
       setText('monitorLastSync', '—');
-      setText('monitorSessionStatus', '—');
+      setText('monitorSessionStatus', 'Offline');
       setText('monitorParamsId', '—');
       setText('monitorSessionEnds', '—');
       document.getElementById('heater1Dot').className = 'status-dot';
