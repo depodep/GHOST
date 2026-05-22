@@ -8,6 +8,9 @@ $incubators = $pdo->query(
   "SELECT i.*,
     (SELECT COUNT(*) FROM batches WHERE incubator_id=i.id AND status='incubating') as active_batches,
     (SELECT COUNT(*) FROM batches WHERE incubator_id=i.id) as total_batches,
+    (SELECT COUNT(*) FROM batches WHERE incubator_id=i.id AND status IN ('completed','hatched')) as success_batches,
+    (SELECT COUNT(*) FROM batches WHERE incubator_id=i.id AND status='failed') as failed_batches,
+    (SELECT COUNT(*) FROM batches WHERE incubator_id=i.id AND status='terminated') as terminated_batches,
     (SELECT COALESCE(SUM(egg_count),0) FROM batches WHERE incubator_id=i.id AND status='incubating') as eggs_in,
     ts.target_temp, ts.target_humidity, ts.min_temp, ts.max_temp, ts.turning_interval,
     hs.temperature as live_temp, hs.humidity as live_humidity,
@@ -49,7 +52,7 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
           <span class="badge-<?= $inc['status'] ?>"><?= $inc['status'] ?></span>
           <span style="display:flex;align-items:center;gap:4px;font-size:.7rem;color:<?= $online?'#22c55e':'var(--ghost-muted)' ?>;">
             <span style="width:7px;height:7px;border-radius:50%;background:<?= $online?'#22c55e':'#64748b' ?>;display:inline-block;"></span>
-            <?= $online ? 'Online' : 'Offline' ?>
+            <?= $online ? 'Online now' : 'Offline' ?>
           </span>
         </div>
       </div>
@@ -83,6 +86,25 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
           </div>
         </div>
 
+        <div style="font-size:.75rem;color:var(--ghost-muted);margin-bottom:12px;">
+          Last online: <?= !empty($inc['last_seen']) ? date('M j, Y H:i', strtotime($inc['last_seen'])) : '—' ?>
+        </div>
+
+        <div class="row g-2 text-center mb-3">
+          <div class="col-4">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:1.7rem;color:var(--ghost-green);"><?= (int)$inc['success_batches'] ?></div>
+            <div style="font-size:.68rem;color:var(--ghost-muted);">Success</div>
+          </div>
+          <div class="col-4">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:1.7rem;color:#f87171;"><?= (int)$inc['failed_batches'] ?></div>
+            <div style="font-size:.68rem;color:var(--ghost-muted);">Failed</div>
+          </div>
+          <div class="col-4">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:1.7rem;color:var(--ghost-amber);"><?= (int)$inc['terminated_batches'] ?></div>
+            <div style="font-size:.68rem;color:var(--ghost-muted);">Terminated</div>
+          </div>
+        </div>
+
         <!-- Live Sensor Boxes -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
           <div style="background:rgba(245,166,35,.07);border:1px solid rgba(245,166,35,.18);border-radius:9px;padding:9px 12px;text-align:center;">
@@ -109,26 +131,6 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
 
         <!-- Feedback line per card -->
         <div id="fb-<?= $inc['id'] ?>" style="display:none;font-size:.72rem;padding:6px 10px;border-radius:7px;text-align:center;margin-bottom:8px;"></div>
-
-        <!-- Hardware Buttons: Incubate Now / Start Now -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px;">
-          <button class="btn-ghost" style="font-size:.75rem;padding:8px 4px;"
-            onclick="sendHWCmd(<?= $inc['id'] ?>,'heater_on')">
-            <i class="fas fa-fire me-1"></i> Incubate Now
-          </button>
-          <button class="btn-outline-ghost" style="font-size:.75rem;padding:8px 4px;"
-            onclick="sendHWCmd(<?= $inc['id'] ?>,'heater_off')">
-            <i class="fas fa-stop me-1"></i> Heater Off
-          </button>
-          <button style="background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 0 14px rgba(34,197,94,.2);color:white;border:none;border-radius:8px;font-size:.75rem;padding:8px 4px;cursor:pointer;font-weight:600;width:100%;"
-            onclick="sendHWCmd(<?= $inc['id'] ?>,'swing_on')">
-            <i class="fas fa-rotate me-1"></i> Start Now
-          </button>
-          <button class="btn-outline-ghost" style="font-size:.75rem;padding:8px 4px;"
-            onclick="sendHWCmd(<?= $inc['id'] ?>,'swing_off')">
-            <i class="fas fa-stop me-1"></i> Swing Off
-          </button>
-        </div>
 
         <!-- Edit / Delete -->
         <div class="d-flex gap-2">
@@ -191,9 +193,6 @@ $users = $pdo->query("SELECT id,full_name FROM users WHERE status='active'")->fe
               <option value="idle">Idle</option><option value="active">Active</option><option value="maintenance">Maintenance</option><option value="error">Error</option>
             </select>
           </div>
-          <div class="col-md-6"><label class="form-label-ghost">Target Temp (°C)</label><input type="number" step="0.1" class="form-control-ghost" id="ei_target_temp"></div>
-          <div class="col-md-6"><label class="form-label-ghost">Target Humidity (%)</label><input type="number" step="0.1" class="form-control-ghost" id="ei_target_humidity"></div>
-          <div class="col-md-6"><label class="form-label-ghost">Turning Interval (hrs)</label><input type="number" min="0.01" step="0.01" class="form-control-ghost" id="ei_turning_interval"></div>
         </div>
       </div>
       <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button class="btn-ghost" onclick="updateIncub()"><i class="fas fa-save me-2"></i>Update</button></div>
@@ -253,8 +252,6 @@ function addIncub(){
 function editIncub(i){
   $('#ei_id').val(i.id);$('#ei_name').val(i.name);$('#ei_model').val(i.model);
   $('#ei_capacity').val(i.capacity);$('#ei_location').val(i.location);$('#ei_status').val(i.status);
-  $('#ei_target_temp').val(i.target_temp||'');$('#ei_target_humidity').val(i.target_humidity||'');
-  $('#ei_turning_interval').val(i.turning_interval||'');
   new bootstrap.Modal(document.getElementById('editIncubModal')).show();
 }
 function updateIncub(){
@@ -262,9 +259,7 @@ function updateIncub(){
   $.ajax({url:'../ajax/admin_incubators.php',method:'POST',data:{
     action:'update',id:$('#ei_id').val(),name:$('#ei_name').val(),
     model:$('#ei_model').val(),capacity:$('#ei_capacity').val(),
-    location:$('#ei_location').val(),status:$('#ei_status').val(),
-    target_temp:$('#ei_target_temp').val(),target_humidity:$('#ei_target_humidity').val(),
-    turning_interval:$('#ei_turning_interval').val()
+    location:$('#ei_location').val(),status:$('#ei_status').val()
   },dataType:'json',
     success:r=>{hideLoader();if(r.success){showToast('Updated!');setTimeout(()=>location.reload(),700);}else showToast(r.message,'error');},
     error:()=>{hideLoader();showToast('Server error.','error');}

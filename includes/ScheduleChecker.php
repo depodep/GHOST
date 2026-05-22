@@ -17,7 +17,7 @@ class ScheduleChecker {
     private bool $supportsNullActivityUserId;
     private const SCHEDULE_FAILURE_LOG_PATH = __DIR__ . '/../logs/schedule_start_failures.log';
 
-    public function __construct(PDO $pdo, int $gracePeriodSeconds = 10) {
+    public function __construct(PDO $pdo, int $gracePeriodSeconds = SCHEDULE_OFFLINE_GRACE_SECONDS) {
         $this->pdo = $pdo;
         $this->gracePeriodSeconds = max(1, $gracePeriodSeconds);
         $this->supportsScheduleNotes = $this->columnExists('schedules', 'notes');

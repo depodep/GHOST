@@ -1,9 +1,16 @@
 <?php
+require_once '../includes/config.php';
+requireAdmin();
 $pageTitle = 'Batches';
-$pageSubtitle = 'All egg batches across all incubators';
+$pageSubtitle = 'Incubator batches and scheduled runs';
 $activePage = 'batches';
-require_once 'header.php';
 $pdo = getDB();
+
+$incubatorFilter = (int)($_GET['incubator_id'] ?? 0);
+$statusFilter = trim((string)($_GET['status'] ?? ''));
+
+require_once 'header.php';
+
 $batches = $pdo->query(
   "SELECT b.*, COALESCE(i.incubator_name, i.name, CONCAT('Incubator #', b.incubator_id)) as incubator_name,
           COALESCE(u.full_name, CONCAT('User #', b.user_id)) as user_name,
@@ -94,8 +101,33 @@ function batchStatusTimeLabel(array $batch): string {
   return '—';
 }
 ?>
-<div class="d-flex justify-content-end mb-4">
-  <button class="btn-ghost" data-bs-toggle="modal" data-bs-target="#addBatchModal"><i class="fas fa-plus me-2"></i>Add Batch</button>
+<div class="ghost-panel mb-3">
+  <div class="ghost-panel-body" style="padding:16px 20px;">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label-ghost">Filter By Incubator</label>
+        <select class="form-select-ghost" id="batchIncubatorFilter">
+          <option value="">All incubators</option>
+          <?php foreach($incubators as $i): ?>
+            <option value="<?= (int)$i['id'] ?>" <?= $incubatorFilter === (int)$i['id'] ? 'selected' : '' ?>><?= htmlspecialchars($i['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label-ghost">Filter By Status</label>
+        <select class="form-select-ghost" id="batchStatusFilter">
+          <option value="">All status</option>
+          <?php foreach(['scheduled','incubating','completed','terminated','hatched','failed','cancelled'] as $status): ?>
+            <option value="<?= $status ?>" <?= $statusFilter === $status ? 'selected' : '' ?>><?= ucfirst($status) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-md-4 d-flex gap-2">
+        <button class="btn-ghost" type="button" onclick="applyBatchFilters()"><i class="fas fa-filter me-2"></i>Apply</button>
+        <button class="btn-outline-ghost" type="button" onclick="clearBatchFilters()">Reset</button>
+      </div>
+    </div>
+  </div>
 </div>
 <div class="ghost-panel">
   <div class="ghost-panel-header"><span class="ghost-panel-title">📦 All Batches</span></div>
@@ -103,11 +135,14 @@ function batchStatusTimeLabel(array $batch): string {
     <table class="ghost-table">
       <thead><tr><th>Batch</th><th>User</th><th>Incubator</th><th>Eggs</th><th>Start</th><th>Hatch Day</th><th>Status</th><th>Status Time</th><th>Actions</th></tr></thead>
       <tbody>
-      <?php foreach($batches as $b): $days=max(0,round((strtotime($b['expected_hatch_date'])-time())/86400));
+      <?php foreach($batches as $b):
+        if ($incubatorFilter > 0 && (int)$b['incubator_id'] !== $incubatorFilter) { continue; }
+        if ($statusFilter !== '' && (string)$b['status'] !== $statusFilter) { continue; }
+        $days=max(0,round((strtotime($b['expected_hatch_date'])-time())/86400));
         $startTime = formatBatchDateTime($b['start_date'] ?? null, null, $b['notes'] ?? null);
         $statusTimeDisplay = batchStatusTimeLabel($b);
       ?>
-        <tr>
+        <tr data-incubator-id="<?= (int)$b['incubator_id'] ?>" data-status="<?= htmlspecialchars((string)$b['status']) ?>">
           <td><div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div></td>
           <td style="font-size:.85rem;color:var(--ghost-muted);"><?= htmlspecialchars($b['user_name']) ?></td>
           <td style="font-size:.85rem;"><?= htmlspecialchars($b['incubator_name']) ?></td>
@@ -139,25 +174,6 @@ function batchStatusTimeLabel(array $batch): string {
   </div>
 </div>
 
-<!-- ADD -->
-<div class="modal fade modal-ghost" id="addBatchModal" tabindex="-1">
-  <div class="modal-dialog modal-lg modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header"><h5 class="modal-title"><i class="fas fa-plus-circle me-2" style="color:var(--ghost-amber)"></i>Add Batch</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-      <div class="modal-body" style="padding:24px;"><div class="row g-3">
-        <div class="col-12"><label class="form-label-ghost">Batch Name</label><input type="text" class="form-control-ghost" id="ab2_name" placeholder="e.g. Batch Delta-01"></div>
-        <div class="col-md-6"><label class="form-label-ghost">Assign to User</label><select class="form-select-ghost" id="ab2_user"><?php foreach($users as $u): ?><option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['full_name']) ?></option><?php endforeach; ?></select></div>
-        <div class="col-md-6"><label class="form-label-ghost">Incubator</label><select class="form-select-ghost" id="ab2_incubator"><?php foreach($incubators as $i): ?><option value="<?= $i['id'] ?>"><?= htmlspecialchars($i['name']) ?></option><?php endforeach; ?></select></div>
-        <div class="col-md-4"><label class="form-label-ghost">Egg Count</label><input type="number" class="form-control-ghost" id="ab2_count" placeholder="50"></div>
-        <div class="col-md-4"><label class="form-label-ghost">Start Date</label><input type="date" class="form-control-ghost" id="ab2_start" value="<?= date('Y-m-d') ?>"></div>
-        <div class="col-md-6"><label class="form-label-ghost">Hatch Date</label><input type="date" class="form-control-ghost" id="ab2_hatch" value="<?= date('Y-m-d',strtotime('+21 days')) ?>"></div>
-        <div class="col-md-6"><label class="form-label-ghost">Notes</label><input type="text" class="form-control-ghost" id="ab2_notes" placeholder="Optional notes"></div>
-      </div></div>
-      <div class="modal-footer"><button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button><button class="btn-ghost" onclick="addBatch2()"><i class="fas fa-save me-2"></i>Save</button></div>
-    </div>
-  </div>
-</div>
-
 <!-- EDIT -->
 <div class="modal fade modal-ghost" id="editBatchModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">
@@ -177,13 +193,6 @@ function batchStatusTimeLabel(array $batch): string {
 </div>
 
 <script>
-function addBatch2(){
-  showLoader('Adding Batch…');
-  $.ajax({url:'../ajax/admin_batches.php',method:'POST',data:{action:'add',name:$('#ab2_name').val(),user_id:$('#ab2_user').val(),incubator_id:$('#ab2_incubator').val(),egg_count:$('#ab2_count').val(),start_date:$('#ab2_start').val(),hatch_date:$('#ab2_hatch').val(),notes:$('#ab2_notes').val()},dataType:'json',
-    success:r=>{hideLoader();if(r.success){showToast('Batch added!');setTimeout(()=>location.reload(),700);}else showToast(r.message,'error');},
-    error:()=>{hideLoader();showToast('Server error.','error');}
-  });
-}
 function editBatch(b){$('#eb2_id').val(b.id);$('#eb2_name').val(b.batch_name);$('#eb2_count').val(b.egg_count);$('#eb2_hatch').val(b.expected_hatch_date);$('#eb2_status').val(b.status);new bootstrap.Modal(document.getElementById('editBatchModal')).show();}
 function updateBatch2(){
   showLoader('Updating Batch…');
@@ -205,6 +214,20 @@ function cancelBatch2(id){
       }
     },'json').fail(function(){ hideLoader(); showToast('Server error.','error'); });
   });
+}
+
+function applyBatchFilters(){
+  const inc = document.getElementById('batchIncubatorFilter').value;
+  const status = document.getElementById('batchStatusFilter').value;
+  const params = new URLSearchParams(window.location.search);
+  if (inc) params.set('incubator_id', inc); else params.delete('incubator_id');
+  if (status) params.set('status', status); else params.delete('status');
+  const q = params.toString();
+  window.location.href = 'batches.php' + (q ? ('?' + q) : '');
+}
+
+function clearBatchFilters(){
+  window.location.href = 'batches.php';
 }
 </script>
 <?php require_once 'footer.php'; ?>

@@ -4,6 +4,8 @@ requireAdmin();
 $pdo = getDB();
 $action = $_POST['action'] ?? '';
 
+jsonResponse(['success' => false, 'message' => 'Admin scheduling is disabled. Use the user scheduling flow.']);
+
 function parseScheduleDateTime($date, $time) {
   $date = trim((string)$date);
   $time = trim((string)$time);

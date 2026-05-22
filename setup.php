@@ -304,25 +304,8 @@ out($compatOk ? "Schedule manager compatibility migration: ✓\n" : "Schedule ma
 
 out("\n3. Creating demo data...\n");
 
-// Create test user if not exists
-out("   - test user...");
-try {
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE email = 'test@ghost.com' LIMIT 1");
-    $stmt->execute();
-    if (!$stmt->fetch()) {
-        $stmt = $pdo->prepare(
-            "INSERT INTO users (full_name, email, password, status) 
-             VALUES ('Test User', 'test@ghost.com', ?, 'active')"
-        );
-        $stmt->execute([password_hash('test123', PASSWORD_BCRYPT)]);
-        out(" created");
-    } else {
-        out(" exists");
-    }
-} catch (Exception $e) {
-    out(" error");
-}
-out(" ✓\n");
+// Create test user if not exists (disabled)
+out("   - test user... skipped (demo creation disabled) \n");
 
 // Create test incubator if not exists (disabled)
 out("   - test incubator... skipped (demo creation disabled) \n");

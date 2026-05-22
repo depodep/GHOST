@@ -55,9 +55,10 @@ $userIncubators = $pdo->query(
      ORDER BY i.name")->fetchAll();
 
 
+$defaultIncubatorId = (int)($userIncubators[0]['id'] ?? 0);
 $tempLogs = array_reverse($pdo->query(
     "SELECT temperature, humidity, DATE_FORMAT(recorded_at,'%H:%i') AS lbl
-     FROM temperature_logs WHERE incubator_id=1
+    FROM temperature_logs WHERE incubator_id=" . $defaultIncubatorId . "
      ORDER BY recorded_at DESC LIMIT 10")->fetchAll());
 
 // Helpers: extract batch start timestamp and display egg count with fallbacks
@@ -97,6 +98,70 @@ function displayEggCountForRow($b) {
     // Try to infer from batch_name like '5 eggs' (best-effort)
     if (!empty($b['batch_name']) && preg_match('/(\d+)\s*egg/i', $b['batch_name'], $m2)) {
         return number_format((int)$m2[1]);
+    }
+
+    return '—';
+}
+
+function formatDashboardBatchTime(?string $value): ?string {
+    if (empty($value) || str_starts_with($value, '0000-00-00')) {
+        return null;
+    }
+
+    $ts = strtotime($value);
+    if ($ts === false || $ts <= 0) {
+        return null;
+    }
+
+    return date('M j, Y H:i', $ts);
+}
+
+function displayBatchEggCount(array $batch): string {
+    $eggCount = isset($batch['egg_count']) ? (int)$batch['egg_count'] : 0;
+    if ($eggCount <= 0 && !empty($batch['batch_name']) && preg_match('/(\d+)\s*eggs/i', $batch['batch_name'], $matches)) {
+        $eggCount = (int)$matches[1];
+    }
+
+    return (string)$eggCount;
+}
+
+function formatBatchDateTime(?string $date, ?string $time = null, ?string $notes = null): string {
+    $scheduledStart = null;
+    if (!empty($notes) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', $notes, $matches)) {
+        $scheduledStart = $matches[1];
+    }
+
+    $value = $scheduledStart ?: trim((string)$date . ' ' . trim((string)($time ?? '00:00:00')));
+    $timestamp = strtotime($value);
+    if (!$timestamp) {
+        return '—';
+    }
+
+    return date('F j, Y H:i', $timestamp);
+}
+
+function batchStatusTimeLabel(array $batch): string {
+    $status = isset($batch['status']) ? strtolower(trim((string)$batch['status'])) : '';
+
+    if ($status === 'scheduled' || $status === 'incubating') {
+        return formatBatchDateTime($batch['start_date'] ?? null, null, $batch['notes'] ?? null);
+    }
+
+    if ($status === 'completed' && !empty($batch['completed_at'])) {
+        return formatDashboardBatchTime($batch['completed_at']) ?? '—';
+    }
+
+    if (in_array($status, ['terminated', 'cancelled', 'failed'], true)) {
+        if (!empty($batch['terminated_at'])) {
+            return formatDashboardBatchTime($batch['terminated_at']) ?? '—';
+        }
+        if (!empty($batch['completed_at'])) {
+            return formatDashboardBatchTime($batch['completed_at']) ?? '—';
+        }
+        $scheduled = extractBatchStartTimestamp($batch);
+        if ($scheduled) {
+            return date('F j, Y H:i', $scheduled);
+        }
     }
 
     return '—';
@@ -314,6 +379,30 @@ function displayEggCountForRow($b) {
     border-color: rgba(255, 255, 255, .04);
     color: var(--ghost-muted);
 }
+
+#sessionTempChartCard {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+}
+
+#sessionTempChartCard .ghost-panel-body {
+    display: flex;
+    flex: 1;
+    padding: 16px;
+}
+
+#sessionTempChartCard .chart-wrap {
+    flex: 1;
+    min-height: 320px;
+    height: 100%;
+}
+
+#sessionTempChartCard canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+}
 </style>
 <div class="ghost-panel mb-4">
     <div class="ghost-panel-header d-flex justify-content-between align-items-center">
@@ -351,9 +440,9 @@ function displayEggCountForRow($b) {
                     style="margin-top:14px;background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);border-radius:12px;padding:12px 14px;">
                     <div
                         style="font-size:.72rem;color:var(--ghost-muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px;">
-                        Device Status</div>
+                        Device Mode</div>
                     <div id="deviceStatusBadge" class="status-pill offline"><span id="deviceStatusDot"
-                            class="status-dot off"></span><span id="deviceStatusText">OFFLINE</span></div>
+                            class="status-dot off"></span><span id="deviceStatusText">IDLE</span></div>
                     <div style="font-size:.72rem;color:var(--ghost-muted);margin-top:10px;line-height:1.5;">Monitoring
                         is view only. Hardware decisions are driven automatically by the controller and downloaded
                         parameters.</div>
@@ -455,8 +544,16 @@ function displayEggCountForRow($b) {
             <div class="ghost-panel-body">
                 <div class="monitor-grid" style="padding: 6px 0;">
                     <div class="monitor-item">
-                        <div class="monitor-label">Start Time</div>
+                        <div class="monitor-label">Batch Name</div>
+                        <div class="monitor-value" id="paramBatchName">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Batch Start</div>
                         <div class="monitor-value" id="paramStartTime">—</div>
+                    </div>
+                    <div class="monitor-item">
+                        <div class="monitor-label">Running Time</div>
+                        <div class="monitor-value" id="paramSessionStart">—</div>
                     </div>
                     <div class="monitor-item">
                         <div class="monitor-label">End Time</div>
@@ -554,42 +651,40 @@ function displayEggCountForRow($b) {
         <table class="ghost-table">
             <thead>
                 <tr>
-                    <th>Batch</th>
+                    <th>Batch Name</th>
                     <th>Incubator</th>
                     <th>Eggs</th>
-                    <th>Start Date</th>
-                    <th>Start Time</th>
+                    <th>Start</th>
                     <th>Expected Hatch</th>
                     <th>Status</th>
-                    <th> Time</th>
+                    <th>Status Time</th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach($batches as $b):
         $days = max(0, round((strtotime($b['expected_hatch_date']) - time()) / 86400));
-        $statusTime = null;
-        if ($b['status'] === 'completed') { $statusTime = $b['completed_at'] ?? null; }
-        if ($b['status'] === 'terminated') { $statusTime = $b['terminated_at'] ?? null; }
+        $startTime = formatBatchDateTime($b['start_date'] ?? null, null, $b['notes'] ?? null);
+        $statusTime = batchStatusTimeLabel($b);
         ?>
                 <tr>
                     <td>
                         <div style="font-weight:600;color:white;"><?= htmlspecialchars($b['batch_name']) ?></div>
+                        <?php if(!empty($b['notes'])): ?>
+                        <div style="font-size:.72rem;color:var(--ghost-muted);"><?= substr(htmlspecialchars($b['notes']),0,40) ?>...</div>
+                        <?php endif; ?>
                     </td>
-                    <td style="font-size:.85rem;color:var(--ghost-muted);"><?= htmlspecialchars($b['incubator_name']) ?>
-                    </td>
-                    <td style="font-weight:600;"><?= htmlspecialchars(displayEggCountForRow($b)) ?></td>
-                    <?php $startTs = extractBatchStartTimestamp($b); ?>
-                    <td style="font-size:.82rem;color:var(--ghost-muted);"><?= $startTs ? date('M j, Y', $startTs) : '—' ?></td>
-                    <td style="font-size:.82rem;color:var(--ghost-muted);"><?= $startTs ? date('H:i', $startTs) : '—' ?></td>
+                    <td style="font-size:.85rem;"><?= htmlspecialchars($b['incubator_name']) ?></td>
+                    <td style="font-weight:600;"><?= htmlspecialchars(displayBatchEggCount($b)) ?></td>
+                    <td style="font-size:.82rem;color:var(--ghost-muted);"><?= htmlspecialchars($startTime) ?></td>
                     <td>
                         <div style="font-size:.85rem;"><?= date('M j, Y',strtotime($b['expected_hatch_date'])) ?></div>
-                        <div style="font-size:.72rem;color:<?= $days<=3?'#f87171':'var(--ghost-muted)' ?>;">
-                            <?= $days > 0 ? $days.' days left' : 'Today!' ?>
+                        <div style="font-size:.72rem;color:<?= $days<=3&&$b['status']=='incubating'?'#f87171':'var(--ghost-muted)' ?>;">
+                            <?= $b['status']=='incubating' ? ($days > 0 ? $days.' days left' : 'Hatch day!') : '' ?>
                         </div>
                     </td>
                     <td><span class="badge-<?= $b['status'] ?>"><?= $b['status'] ?></span></td>
                     <td style="font-size:.82rem;color:var(--ghost-muted);">
-                        <?= $statusTime ? date('M j, Y H:i', strtotime($statusTime)) : '—' ?>
+                        <?= htmlspecialchars($statusTime) ?>
                     </td>
                 </tr>
                 <?php endforeach; ?>
@@ -803,8 +898,13 @@ function displayEggCountForRow($b) {
 
 <script>
 console.log('[SCRIPT] Dashboard script loaded');
-// Store chart instance globally for updates
-let tempChartInstance = null;
+// Store chart data globally for updates
+let tempChartCanvas = null;
+let tempChartData = {
+    labels: [],
+    temperatures: [],
+    humidity: []
+};
 let liveSessionState = {
     startedAt: null,
     endsAt: null,
@@ -849,135 +949,235 @@ function applyChartBounds(chart, tempValues, humValues) {
     }
 }
 
-window.addEventListener('load', function() {
-    if (!window.Chart) return;
-    Chart.defaults.color = '#64748b';
-    Chart.defaults.font.family = 'Space Grotesk';
-    const initialLabels = <?= json_encode(array_column($tempLogs,'lbl')) ?>;
-    const initialTempData = <?= json_encode(array_column($tempLogs,'temperature')) ?>;
-    const initialHumData = <?= json_encode(array_column($tempLogs,'humidity')) ?>;
-    tempChartInstance = new Chart(document.getElementById('tempChart'), {
-        type: 'line',
-        data: {
-            labels: initialLabels,
-            datasets: [{
-                    label: 'Temperature (°C)',
-                    yAxisID: 'y',
-                    data: initialTempData,
-                    borderColor: '#f5a623',
-                    backgroundColor: 'rgba(245,166,35,.08)',
-                    tension: .4,
-                    pointRadius: 4,
-                    pointBackgroundColor: '#f5a623',
-                    borderWidth: 2,
-                    fill: true
-                },
-                {
-                    label: 'Humidity (%)',
-                    yAxisID: 'y2',
-                    data: initialHumData,
-                    borderColor: '#3b82f6',
-                    backgroundColor: 'rgba(59,130,246,.06)',
-                    tension: .4,
-                    pointRadius: 4,
-                    pointBackgroundColor: '#3b82f6',
-                    borderWidth: 2,
-                    fill: true
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            layout: {
-                padding: {
-                    left: 8,
-                    right: 12,
-                    top: 8,
-                    bottom: 6
-                }
-            },
-            interaction: {
-                mode: 'index',
-                intersect: false
-            },
-            plugins: {
-                legend: {
-                    labels: {
-                        boxWidth: 10,
-                        padding: 16,
-                        font: {
-                            size: 11
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: {
-                        color: 'rgba(255,255,255,.04)'
-                    },
-                    ticks: {
-                        font: {
-                            size: 10
-                        }
-                    }
-                },
-                y: {
-                    grid: {
-                        color: 'rgba(255,255,255,.04)'
-                    },
-                    ticks: {
-                        font: {
-                            size: 10
-                        },
-                        callback: v => v + '°C'
-                    }
-                },
-                y2: {
-                    position: 'right',
-                    grid: {
-                        display: false
-                    },
-                    ticks: {
-                        font: {
-                            size: 10
-                        },
-                        callback: v => v + '%'
-                    }
-                }
-            }
-        }
-    });
-    applyChartBounds(tempChartInstance, initialTempData, initialHumData);
+function computeSeriesBounds(values, preferredMin, preferredMax) {
+    const nums = (values || []).map(value => Number(value)).filter(value => Number.isFinite(value));
+    if (!nums.length) {
+        return { min: preferredMin, max: preferredMax };
+    }
 
-    // Start auto-refresh of temperature chart every 30 seconds
-    setInterval(refreshTemperatureChart, 30000);
+    let min = Math.min(...nums);
+    let max = Math.max(...nums);
+    if (min === max) {
+        min -= 0.5;
+        max += 0.5;
+    } else {
+        const range = max - min;
+        const pad = Math.max(range * 0.08, 0.4);
+        min -= pad;
+        max += pad;
+    }
+
+    if (Number.isFinite(preferredMin)) {
+        min = Math.min(min, preferredMin);
+    }
+    if (Number.isFinite(preferredMax)) {
+        max = Math.max(max, preferredMax);
+    }
+
+    return { min, max };
+}
+
+function drawTemperatureTrendChart(labels, temperatures, humidity) {
+    if (!tempChartCanvas) {
+        tempChartCanvas = document.getElementById('tempChart');
+    }
+
+    const canvas = tempChartCanvas;
+    if (!canvas) {
+        return;
+    }
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+        return;
+    }
+
+    const parent = canvas.parentElement;
+    const cssWidth = Math.max(320, Math.floor((parent && parent.clientWidth) || canvas.clientWidth || 0));
+    const cssHeight = Math.max(220, Math.floor((parent && parent.clientHeight) || canvas.clientHeight || 260));
+    const pixelRatio = window.devicePixelRatio || 1;
+
+    canvas.width = Math.floor(cssWidth * pixelRatio);
+    canvas.height = Math.floor(cssHeight * pixelRatio);
+    canvas.style.width = cssWidth + 'px';
+    canvas.style.height = cssHeight + 'px';
+    canvas.style.display = 'block';
+    canvas.style.maxWidth = '100%';
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.clearRect(0, 0, cssWidth, cssHeight);
+
+    context.fillStyle = 'rgba(255, 255, 255, 0.02)';
+    context.fillRect(0, 0, cssWidth, cssHeight);
+
+    if (!labels.length) {
+        context.fillStyle = '#64748b';
+        context.font = '600 13px "Space Grotesk", sans-serif';
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText('No temperature data yet', cssWidth / 2, cssHeight / 2);
+        return;
+    }
+
+    const padding = { top: 22, right: 76, bottom: 54, left: 60 };
+    const plotWidth = cssWidth - padding.left - padding.right;
+    const plotHeight = cssHeight - padding.top - padding.bottom;
+    if (plotWidth <= 0 || plotHeight <= 0) {
+        return;
+    }
+
+    const tempBounds = computeSeriesBounds(temperatures, 36, 39);
+    const humBounds = computeSeriesBounds(humidity, 45, 70);
+    const tickCount = labels.length > 1 ? Math.min(5, labels.length) : 2;
+
+    const toPoint = function(index, value, bounds) {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) {
+            return null;
+        }
+
+        const x = padding.left + (labels.length === 1 ? plotWidth / 2 : (index / (labels.length - 1)) * plotWidth);
+        const ratio = (numericValue - bounds.min) / ((bounds.max - bounds.min) || 1);
+        const y = padding.top + plotHeight - (ratio * plotHeight);
+        return { x: x, y: y };
+    };
+
+    const drawSeries = function(points, strokeColor, fillColor) {
+        const finitePoints = points.filter(Boolean);
+        if (!finitePoints.length) {
+            return;
+        }
+
+        context.beginPath();
+        let started = false;
+        points.forEach(function(point) {
+            if (!point) {
+                started = false;
+                return;
+            }
+
+            if (!started) {
+                context.moveTo(point.x, point.y);
+                started = true;
+            } else {
+                context.lineTo(point.x, point.y);
+            }
+        });
+
+        context.strokeStyle = strokeColor;
+        context.lineWidth = 3;
+        context.stroke();
+
+        if (fillColor) {
+            context.lineTo(finitePoints[finitePoints.length - 1].x, padding.top + plotHeight);
+            context.lineTo(finitePoints[0].x, padding.top + plotHeight);
+            context.closePath();
+            context.fillStyle = fillColor;
+            context.fill();
+        }
+
+        finitePoints.forEach(function(point) {
+            context.beginPath();
+            context.arc(point.x, point.y, 4, 0, Math.PI * 2);
+            context.fillStyle = strokeColor;
+            context.fill();
+        });
+    };
+
+    context.font = '11px "Space Grotesk", sans-serif';
+    context.textBaseline = 'middle';
+    context.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    context.lineWidth = 1;
+
+    for (let i = 0; i < tickCount; i++) {
+        const ratio = tickCount === 1 ? 0 : i / (tickCount - 1);
+        const y = padding.top + plotHeight - (ratio * plotHeight);
+        const tempValue = tempBounds.min + ((tempBounds.max - tempBounds.min) * ratio);
+        const humValue = humBounds.min + ((humBounds.max - humBounds.min) * ratio);
+
+        context.beginPath();
+        context.moveTo(padding.left, y);
+        context.lineTo(cssWidth - padding.right, y);
+        context.stroke();
+
+        context.fillStyle = '#f5a623';
+        context.textAlign = 'right';
+        context.fillText(tempValue.toFixed(1) + '°C', padding.left - 10, y);
+
+        context.fillStyle = '#3b82f6';
+        context.textAlign = 'left';
+        context.fillText(humValue.toFixed(0) + '%', cssWidth - padding.right + 10, y);
+    }
+
+    context.beginPath();
+    context.moveTo(padding.left, padding.top + plotHeight);
+    context.lineTo(cssWidth - padding.right, padding.top + plotHeight);
+    context.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    context.stroke();
+
+    const tempPoints = temperatures.map(function(value, index) {
+        return toPoint(index, value, tempBounds);
+    });
+    const humidityPoints = humidity.map(function(value, index) {
+        return toPoint(index, value, humBounds);
+    });
+
+    drawSeries(tempPoints, '#f5a623', 'rgba(245, 166, 35, 0.08)');
+    drawSeries(humidityPoints, '#3b82f6', null);
+
+    const tickStep = labels.length > 8 ? Math.ceil(labels.length / 6) : 1;
+    context.fillStyle = '#94a3b8';
+    context.textAlign = 'center';
+    context.textBaseline = 'top';
+
+    for (let index = 0; index < labels.length; index += tickStep) {
+        const x = padding.left + (labels.length === 1 ? plotWidth / 2 : (index / (labels.length - 1)) * plotWidth);
+        context.fillText(labels[index], x, padding.top + plotHeight + 12);
+    }
+}
+
+function renderTemperatureTrendChart() {
+    drawTemperatureTrendChart(tempChartData.labels, tempChartData.temperatures, tempChartData.humidity);
+}
+
+window.addEventListener('load', function() {
+    tempChartData.labels = <?= json_encode(array_column($tempLogs,'lbl')) ?>;
+    tempChartData.temperatures = (<?= json_encode(array_column($tempLogs,'temperature')) ?> || []).map(v => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    });
+    tempChartData.humidity = (<?= json_encode(array_column($tempLogs,'humidity')) ?> || []).map(v => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    });
+    tempChartCanvas = document.getElementById('tempChart');
+    renderTemperatureTrendChart();
+    window.addEventListener('resize', renderTemperatureTrendChart);
+    refreshTemperatureChart();
+    setInterval(updateRunningSessionTimer, 1000);
 });
 
 // Function to refresh temperature chart with latest data
 function refreshTemperatureChart() {
     const incId = document.getElementById('qc_incubator_id').value;
-    console.log('[startSessionQuick] START - incubator_id:', incId);
-    if (!incId || !tempChartInstance) return;
+    if (!incId || !tempChartCanvas) return;
 
     $.get('../ajax/get_temperature_logs.php', {
         incubator_id: incId,
         limit: 10
     }, function(data) {
-        if (data && data.length > 0) {
-            const temps = data.map(d => d.temperature);
-            const hums = data.map(d => d.humidity);
-            tempChartInstance.data.labels = data.map(d => d.lbl);
-            tempChartInstance.data.datasets[0].data = temps;
-            tempChartInstance.data.datasets[1].data = hums;
-            applyChartBounds(tempChartInstance, temps, hums);
-            tempChartInstance.update();
-        }
+        const logs = Array.isArray(data) ? data : [];
+        tempChartData.labels = logs.map(d => d.lbl);
+        tempChartData.temperatures = logs.map(d => {
+            const n = Number(d.temperature);
+            return Number.isFinite(n) ? n : null;
+        });
+        tempChartData.humidity = logs.map(d => {
+            const n = Number(d.humidity);
+            return Number.isFinite(n) ? n : null;
+        });
+        renderTemperatureTrendChart();
     }, 'json');
 }
-
-// ══════════════════════════════════════════════════════════
 //  HELPER
 // ══════════════════════════════════════════════════════════
 function selectedOpt() {
@@ -1093,6 +1293,7 @@ function syncSelectedOptSettings(settings) {
 
 function onIncubatorChange() {
     fetchLiveStatus();
+    refreshTemperatureChart();
 }
 
 function formatDuration(totalSeconds) {
@@ -1103,6 +1304,20 @@ function formatDuration(totalSeconds) {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${days}d ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function updateRunningSessionTimer() {
+    const el = document.getElementById('paramSessionStart');
+    if (!el) return;
+
+    const startedAt = liveSessionState.startedAt ? parseServerDate(liveSessionState.startedAt) : null;
+    if (!startedAt || liveSessionState.status !== 'running') {
+        el.textContent = '—';
+        return;
+    }
+
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000));
+    el.textContent = formatDuration(elapsedSeconds);
 }
 
 function getIncubationFormValues() {
@@ -1498,6 +1713,14 @@ function setModePill(state) {
     pill.textContent = label;
 }
 
+function setDeviceModeBadge(mode, isOnline) {
+    const normalized = String(mode || 'idle').toLowerCase();
+    const active = isOnline && (normalized === 'incubating' || normalized === 'hatching');
+    const label = isOnline ? normalized.toUpperCase() : 'OFFLINE';
+    setStatusPill('deviceStatusBadge', 'deviceStatusDot', 'deviceStatusText', active, label, label, 'online',
+        'offline');
+}
+
 function formatCountdownShort(totalSeconds) {
     if (totalSeconds <= 0 || !isFinite(totalSeconds)) return '—';
     const hours = Math.floor(totalSeconds / 3600);
@@ -1540,7 +1763,9 @@ function fetchLiveStatus() {
         const isOnline = res.online;
 
         // Session parameter card values (show even if offline)
-        setText('paramStartTime', res.session_started_at ? formatReadableDate(res.session_started_at) : '—');
+        setText('paramBatchName', res.active_session_name || '—');
+        setText('paramStartTime', res.active_batch_start_at ? formatReadableDate(res.active_batch_start_at) : (res.session_started_at ? formatReadableDate(res.session_started_at) : '—'));
+        setText('paramSessionStart', '—');
         setText('paramEndTime', res.session_ends_at ? formatReadableDate(res.session_ends_at) : '—');
         setText('paramEggCount', (res.egg_count || res.egg_count === 0) ? String(res.egg_count) : '—');
         setText('paramTargetTemp', res.target_temp ? `${parseFloat(res.target_temp).toFixed(2)}°C` : '—');
@@ -1586,18 +1811,15 @@ function fetchLiveStatus() {
             setText('paramNextSwing', lockdownDays > 0 ? `Disabled (${lockdownDays} days left)` : 'Disabled');
         }
 
-        if (isOnline) {
-            dot.style.background = '#22c55e';
-            lbl.style.color = '#22c55e';
-            lbl.textContent = 'Online';
-        } else {
-            dot.style.background = '#ef4444';
-            lbl.style.color = '#ef4444';
-            lbl.textContent = 'Offline';
+        if (dot) {
+            dot.style.background = isOnline ? '#22c55e' : '#ef4444';
+        }
+        if (lbl) {
+            lbl.style.color = isOnline ? '#22c55e' : '#ef4444';
+            lbl.textContent = isOnline ? 'Online' : 'Offline';
         }
 
-        setStatusPill('deviceStatusBadge', 'deviceStatusDot', 'deviceStatusText', isOnline, 'ONLINE', 'OFFLINE',
-            'online', 'offline');
+        setDeviceModeBadge(res.current_mode || 'idle', isOnline);
 
         // Only display data if device is online
         if (isOnline) {
@@ -1679,6 +1901,15 @@ function fetchLiveStatus() {
         liveSessionState.deviceOnline = !!res.online;
         liveSessionState.lastEggTurnAt = res.last_egg_turn_at || null;
         liveSessionState.lastServerSync = res.last_server_sync || res.last_seen || null;
+        const liveTemp = parseFloat(res.current_temp);
+        const liveHum = parseFloat(res.current_humidity);
+        if (!tempChartData.labels.length && Number.isFinite(liveTemp) && Number.isFinite(liveHum) && liveTemp > 0 && liveHum > 0) {
+            tempChartData.labels = [new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })];
+            tempChartData.temperatures = [liveTemp];
+            tempChartData.humidity = [liveHum];
+            renderTemperatureTrendChart();
+        }
+        updateRunningSessionTimer();
         updateSessionCountdown();
         updateControlButtons();
     }, 'json').fail(function(xhr, textStatus, errorThrown) {
@@ -2092,8 +2323,10 @@ function updateControlButtons() {
     if (sessionTempChartCard) {
         sessionTempChartCard.style.display = isSessionRunning ? 'block' : 'none';
     }
-    if (isSessionRunning && tempChartInstance) {
-        setTimeout(() => tempChartInstance.resize(), 0);
+    if (isSessionRunning && tempChartCanvas) {
+        setTimeout(() => {
+            renderTemperatureTrendChart();
+        }, 0);
     }
 
     // Old session modal buttons (if they exist)

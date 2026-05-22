@@ -29,7 +29,7 @@ $pdo = getDB();
 $stmt = $pdo->prepare(
     "SELECT temperature, humidity, recorded_at, DATE_FORMAT(recorded_at,'%H:%i') AS lbl
      FROM temperature_logs 
-     WHERE incubator_id = ?
+    WHERE incubator_id = ? AND temperature > 0 AND temperature IS NOT NULL
      ORDER BY recorded_at DESC 
      LIMIT ?
      "
@@ -55,7 +55,7 @@ $stateTemp = isset($state['current_temp']) ? (float)$state['current_temp'] : nul
 $stateHum = isset($state['current_humidity']) ? (float)$state['current_humidity'] : null;
 $stateSeen = $state['last_seen'] ?? null;
 
-if ($stateSeen && $stateTemp !== null && $stateHum !== null) {
+if ($stateSeen && $stateTemp !== null && $stateTemp > 0) {
     $stateTs = strtotime($stateSeen);
     $lastTs = $lastLogAt ? strtotime($lastLogAt) : 0;
     if ($stateTs && $stateTs > $lastTs) {
@@ -66,6 +66,13 @@ if ($stateSeen && $stateTemp !== null && $stateHum !== null) {
         ];
     }
 }
+
+foreach ($logs as &$row) {
+    $row['temperature'] = isset($row['temperature']) && $row['temperature'] !== null ? (float)$row['temperature'] : null;
+    $row['humidity'] = isset($row['humidity']) && $row['humidity'] !== null ? (float)$row['humidity'] : null;
+    $row['lbl'] = (string)($row['lbl'] ?? '');
+}
+unset($row);
 
 echo json_encode($logs);
 ?>

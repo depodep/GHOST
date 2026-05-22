@@ -1,14 +1,14 @@
 <?php
-$pageTitle = 'Schedules';
-$pageSubtitle = 'Scheduler status and schedules across all incubators';
-$activePage = 'schedules';
-require_once 'header.php';
-$pdo = getDB();
+require_once '../includes/config.php';
+requireAdmin();
+header('Location: incubators.php');
+exit();
 
 $schedules = $pdo->query(
   "SELECT s.*, 
           COALESCE(i.incubator_name, i.name, CONCAT('Incubator #', s.incubator_id)) AS incubator_name,
           b.batch_name,
+          b.egg_count AS batch_egg_count,
           hs.device_status,
           hs.last_seen,
           hs.session_status,
@@ -102,6 +102,18 @@ function scheduleDurationLabel(array $schedule): string {
   return implode(' ', $parts);
 }
 
+function durationLabelFromSeconds(int $seconds): string {
+  $seconds = max(0, $seconds);
+  $days = intdiv($seconds, 86400);
+  $hours = intdiv($seconds % 86400, 3600);
+  $minutes = intdiv($seconds % 3600, 60);
+  $parts = [];
+  if ($days > 0) $parts[] = $days . 'd';
+  if ($hours > 0 || $days > 0) $parts[] = str_pad((string)$hours, 2, '0', STR_PAD_LEFT) . 'h';
+  $parts[] = str_pad((string)$minutes, 2, '0', STR_PAD_LEFT) . 'm';
+  return implode(' ', $parts);
+}
+
 $scheduleConflictWindows = [];
 foreach ($schedules as $s) {
   $status = trim((string)($s['status'] ?? ''));
@@ -115,16 +127,19 @@ foreach ($schedules as $s) {
   $scheduleConflictWindows[] = [
     'id' => (int)$s['id'],
     'title' => (string)$s['title'],
+    'batch_name' => !empty($s['batch_name']) ? (string)$s['batch_name'] : 'General',
+    'egg_count' => isset($s['batch_egg_count']) ? (int)$s['batch_egg_count'] : null,
     'incubator_id' => (int)($s['incubator_id'] ?? 0),
     'start' => $start,
     'end' => $start + scheduleDurationSeconds($s),
+    'duration_label' => scheduleDurationLabel($s),
     'source' => 'schedule',
     'status' => $status
   ];
 }
 
 foreach ($batches as $b) {
-  $batchStmt = $pdo->prepare("SELECT start_date, expected_hatch_date, notes, status FROM batches WHERE id=? LIMIT 1");
+  $batchStmt = $pdo->prepare("SELECT start_date, expected_hatch_date, notes, status, egg_count FROM batches WHERE id=? LIMIT 1");
   $batchStmt->execute([(int)$b['id']]);
   $row = $batchStmt->fetch(PDO::FETCH_ASSOC);
   if (!$row) {
@@ -143,9 +158,12 @@ foreach ($batches as $b) {
     $scheduleConflictWindows[] = [
       'id' => (int)$b['id'],
       'title' => (string)$b['batch_name'],
+      'batch_name' => (string)$b['batch_name'],
+      'egg_count' => isset($row['egg_count']) ? (int)$row['egg_count'] : null,
       'incubator_id' => (int)($b['incubator_id'] ?? 0),
       'start' => $start,
       'end' => $end,
+      'duration_label' => durationLabelFromSeconds($end - $start),
       'source' => 'batch',
       'status' => (string)($row['status'] ?? '')
     ];
@@ -360,7 +378,7 @@ foreach ($batches as $b) {
                 <div class="col-md-6"><label class="form-label-ghost">Start Time</label><input type="time" class="form-control-ghost" id="as_start_time" value="<?= date('H:i', strtotime('+1 minute')) ?>" oninput="updateSchedulePreview()"></div>
                 <div class="col-md-6"><div style="background:rgba(245,166,35,.06);border:1px solid rgba(245,166,35,.16);border-radius:10px;padding:12px 14px;height:100%;"><div style="font-size:.72rem;font-weight:700;color:#f59e0b;letter-spacing:.12em;text-transform:uppercase;">Session Ends</div><div style="font-size:1.05rem;font-weight:700;color:white;margin-top:8px;" id="as_end_text">—</div><div style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;" id="as_end_subtext">Calculated from start and duration.</div></div></div>
                 <div class="col-md-6"><div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.16);border-radius:10px;padding:12px 14px;height:100%;"><div style="font-size:.72rem;font-weight:700;color:#22c55e;letter-spacing:.12em;text-transform:uppercase;">Active Session Timer</div><div style="font-size:1.05rem;font-weight:700;color:white;margin-top:8px;" id="as_timer_text">—</div></div></div>
-                <div class="col-12"><div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.18);border-radius:10px;padding:12px 14px;" id="as_conflict_box"><div style="font-size:.72rem;font-weight:700;color:#f87171;letter-spacing:.12em;text-transform:uppercase;">Conflict Status</div><div style="font-size:.9rem;font-weight:600;color:white;margin-top:6px;" id="as_conflict_text">No conflict detected.</div><div style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;" id="as_conflict_subtext">The selected time range is available.</div></div></div>
+                <div class="col-12"><div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.18);border-radius:10px;padding:12px 14px;" id="as_conflict_box"><div style="font-size:.72rem;font-weight:700;color:#f87171;letter-spacing:.12em;text-transform:uppercase;">Conflict Status</div><div style="font-size:.9rem;font-weight:600;color:white;margin-top:6px;" id="as_conflict_text">No conflict detected.</div><div style="font-size:.75rem;color:var(--ghost-muted);margin-top:4px;" id="as_conflict_subtext">The selected time range is available.</div><div id="as_conflict_details" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);"><div class="row g-2"><div class="col-6"><div style="font-size:.68rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.08em;">Batch</div><div id="as_conflict_batch" style="font-size:.9rem;font-weight:700;color:white;">—</div></div><div class="col-6"><div style="font-size:.68rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.08em;">Egg Count</div><div id="as_conflict_eggs" style="font-size:.9rem;font-weight:700;color:white;">—</div></div><div class="col-6"><div style="font-size:.68rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.08em;">Duration</div><div id="as_conflict_duration" style="font-size:.9rem;font-weight:700;color:white;">—</div></div><div class="col-6"><div style="font-size:.68rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.08em;">Type</div><div id="as_conflict_type" style="font-size:.9rem;font-weight:700;color:white;">—</div></div><div class="col-12"><div style="font-size:.68rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.08em;">Start</div><div id="as_conflict_start" style="font-size:.9rem;font-weight:700;color:white;">—</div></div><div class="col-12"><div style="font-size:.68rem;color:var(--ghost-muted);text-transform:uppercase;letter-spacing:.08em;">End</div><div id="as_conflict_end" style="font-size:.9rem;font-weight:700;color:white;">—</div></div></div></div></div></div>
               </div>
             </div>
           </div>
@@ -479,6 +497,49 @@ function formatPreviewDateTime(epochSeconds) {
   return dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function formatPreviewDuration(startEpochSeconds, endEpochSeconds) {
+  const totalSeconds = Math.max(0, endEpochSeconds - startEpochSeconds);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || days > 0) parts.push(`${String(hours).padStart(2, '0')}h`);
+  parts.push(`${String(minutes).padStart(2, '0')}m`);
+  return parts.join(' ');
+}
+
+function updateConflictSummary(prefix, conflict) {
+  const details = document.getElementById(`${prefix}_conflict_details`);
+  const batch = document.getElementById(`${prefix}_conflict_batch`);
+  const eggs = document.getElementById(`${prefix}_conflict_eggs`);
+  const duration = document.getElementById(`${prefix}_conflict_duration`);
+  const type = document.getElementById(`${prefix}_conflict_type`);
+  const start = document.getElementById(`${prefix}_conflict_start`);
+  const end = document.getElementById(`${prefix}_conflict_end`);
+  if (!details || !batch || !eggs || !duration || !type || !start || !end) return;
+
+  if (!conflict) {
+    details.style.display = 'none';
+    batch.textContent = '—';
+    eggs.textContent = '—';
+    duration.textContent = '—';
+    type.textContent = '—';
+    start.textContent = '—';
+    end.textContent = '—';
+    return;
+  }
+
+  const sourceLabel = conflict.source === 'batch' ? 'Batch' : conflict.source === 'schedule' ? 'Schedule' : 'Active session';
+  details.style.display = 'block';
+  batch.textContent = conflict.batch_name || conflict.title || '—';
+  eggs.textContent = typeof conflict.egg_count === 'number' && conflict.egg_count >= 0 ? `${conflict.egg_count}` : '—';
+  duration.textContent = conflict.duration_label || formatPreviewDuration(conflict.start, conflict.end);
+  type.textContent = sourceLabel;
+  start.textContent = formatPreviewDateTime(conflict.start);
+  end.textContent = formatPreviewDateTime(conflict.end);
+}
+
 function detectScheduleConflict(newStartMs, newEndMs, incubatorId = '', excludeScheduleId = null, excludeBatchId = null) {
   if (!Array.isArray(scheduleConflictWindows)) return null;
   const newStart = Math.floor(newStartMs / 1000);
@@ -536,9 +597,10 @@ function updateSchedulePreview(prefix = 'as') {
     const conflict = detectScheduleConflict(start.getTime(), end.getTime(), incubatorId, null, batchId);
     if (conflict) {
       conflictBox.style.borderColor = 'rgba(239,68,68,.22)';
-      const conflictPrefix = conflict.source === 'batch' ? 'Batch' : 'Schedule';
-      conflictText.textContent = `Conflicts with ${conflictPrefix}: ${conflict.title}`;
+      const conflictPrefix = conflict.source === 'batch' ? 'Batch' : conflict.source === 'schedule' ? 'Schedule' : 'Active session';
+      conflictText.textContent = `Conflicts with ${conflictPrefix}: ${conflict.batch_name || conflict.title}`;
       conflictSubtext.textContent = `Overlaps ${formatPreviewDateTime(conflict.start)} → ${formatPreviewDateTime(conflict.end)}`;
+      updateConflictSummary(prefix, conflict);
       const conflictKey = `${conflict.source}:${conflict.id}:${conflict.start}:${conflict.end}`;
       if (scheduleConflictNoticeState[prefix] !== conflictKey) {
         scheduleConflictNoticeState[prefix] = conflictKey;
@@ -549,6 +611,7 @@ function updateSchedulePreview(prefix = 'as') {
       conflictBox.style.borderColor = 'rgba(34,197,94,.18)';
       conflictText.textContent = 'No conflict detected.';
       conflictSubtext.textContent = 'The selected time range is available.';
+      updateConflictSummary(prefix, null);
       scheduleConflictNoticeState[prefix] = null;
       setScheduleSaveButtonState(prefix, true);
     }

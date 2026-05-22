@@ -205,11 +205,11 @@ function ensureBatchesSchema(PDO $pdo) {
 }
 
 function refreshScheduleState(PDO $pdo, int $incubator_id): array {
-    $checker = new ScheduleChecker($pdo, 10);
+    $checker = new ScheduleChecker($pdo, SCHEDULE_OFFLINE_GRACE_SECONDS);
     $checkerChanges = $checker->processPendingSchedules($incubator_id);
 
     ensureBatchesSchema($pdo);
-    $scheduleGraceSeconds = 10; // 10 seconds
+    $scheduleGraceSeconds = SCHEDULE_OFFLINE_GRACE_SECONDS;
     $changes = [
         'failed_batches' => 0,
         'promoted_batches' => 0,
@@ -459,7 +459,7 @@ function upsertHardwareState(PDO $pdo, $incubator_id, array $state) {
 
 function getActiveIncubatingBatch(PDO $pdo, $incubator_id) {
     $stmt = $pdo->prepare(
-        "SELECT batch_name, start_date, expected_hatch_date
+                "SELECT batch_name, start_date, expected_hatch_date, notes
          FROM batches
          WHERE incubator_id = ?
            AND status = 'incubating'
@@ -965,8 +965,12 @@ if ($action === 'get_device_config') {
     // If a batch is incubating, keep the session running for device config
     if ($activeBatch && ($row['session_status'] ?? '') !== 'running') {
         $row['session_status'] = 'running';
-        if (empty($row['session_started_at']) && !empty($activeBatch['start_date'])) {
-            $row['session_started_at'] = $activeBatch['start_date'] . ' 00:00:00';
+        $activeBatchStartAt = null;
+        if (!empty($activeBatch['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', (string)$activeBatch['notes'], $matches)) {
+            $activeBatchStartAt = $matches[1];
+        }
+        if (empty($row['session_started_at']) && $activeBatchStartAt) {
+            $row['session_started_at'] = $activeBatchStartAt;
         }
         if (empty($row['session_ends_at']) && !empty($activeBatch['expected_hatch_date'])) {
             $row['session_ends_at'] = $activeBatch['expected_hatch_date'] . ' 00:00:00';
@@ -1436,7 +1440,7 @@ if ($action === 'get_live_status') {
     }
 
     $batchStmt = $pdo->prepare(
-        "SELECT batch_name, egg_type, egg_count, start_date, expected_hatch_date
+        "SELECT id, batch_name, egg_type, egg_count, start_date, expected_hatch_date, notes
          FROM batches
          WHERE incubator_id = ? AND status = 'incubating'
          ORDER BY created_at DESC LIMIT 1"
@@ -1479,8 +1483,12 @@ if ($action === 'get_live_status') {
             $state['active_session_name'] = $activeBatch['batch_name'];
             $needsUpdate = true;
         }
+        $activeBatchStartAt = null;
+        if (!empty($activeBatch['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', (string)$activeBatch['notes'], $matches)) {
+            $activeBatchStartAt = $matches[1];
+        }
         if (empty($state['session_started_at']) && !empty($activeBatch['start_date'])) {
-            $state['session_started_at'] = $activeBatch['start_date'] . ' 00:00:00';
+            $state['session_started_at'] = $activeBatchStartAt;
             $needsUpdate = true;
         }
         if (empty($state['session_ends_at']) && !empty($activeBatch['expected_hatch_date'])) {
@@ -1538,7 +1546,8 @@ if ($action === 'get_live_status') {
             $secondsSinceLastSeen = (int)$ageValue;
         }
     }
-    $online = $secondsSinceLastSeen !== null && $secondsSinceLastSeen >= 0 && $secondsSinceLastSeen < 10;
+    // Allow for normal heartbeat jitter and polling delay before flagging offline.
+    $online = $secondsSinceLastSeen !== null && $secondsSinceLastSeen >= 0 && $secondsSinceLastSeen < 120;
 
     $incubationDay = null;
     if (!empty($state['session_started_at'])) {
@@ -1550,6 +1559,12 @@ if ($action === 'get_live_status') {
 
     $activeSessionName = $state['active_session_name'] ?? $state['batch_session_name'] ?? null;
     $activeBatchId = $activeBatch ? (int)$activeBatch['id'] : (($state['session_id'] ?? null) ? (int)$state['session_id'] : null);
+    $activeBatchStartAt = null;
+    if ($activeBatch) {
+        if (!empty($activeBatch['notes']) && preg_match('/SCHEDULED_START:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/', (string)$activeBatch['notes'], $matches)) {
+            $activeBatchStartAt = $matches[1];
+        }
+    }
     $eggType = $activeBatch['egg_type'] ?? null;
     $eggCount = isset($activeBatch['egg_count']) ? (int)$activeBatch['egg_count'] : null;
     $state['heater_on'] = deriveHeaterGroupState($state) ? 1 : 0;
@@ -1619,6 +1634,7 @@ if ($action === 'get_live_status') {
         'session_status'       => $state['session_status'],
         'current_mode'         => $state['current_mode'],
         'active_batch_id'      => $activeBatchId,
+        'active_batch_start_at' => $activeBatchStartAt,
         'active_session_name'  => $activeSessionName,
         'incubation_day'       => $incubationDay,
         'seconds_since_last_seen' => $secondsSinceLastSeen,

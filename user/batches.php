@@ -291,83 +291,214 @@ function formatDuration(seconds) {
 }
 
 let batchSummaryChart = null;
+let batchSummaryPendingLogs = [];
+
+function formatBatchChartLabel(value) {
+  if (!value) return '';
+  const parsed = new Date(String(value).replace(' ', 'T'));
+  if (isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function computeSeriesBounds(values, fallbackMin, fallbackMax) {
+  const numbers = (values || []).map(value => Number(value)).filter(value => Number.isFinite(value));
+  if (!numbers.length) {
+    return { min: fallbackMin, max: fallbackMax };
+  }
+
+  let min = Math.min(...numbers);
+  let max = Math.max(...numbers);
+  if (min === max) {
+    const pad = min === 0 ? 1 : Math.abs(min) * 0.1;
+    min -= pad;
+    max += pad;
+  }
+
+  const range = max - min;
+  const pad = Math.max(range * 0.08, 0.4);
+  return {
+    min: min - pad,
+    max: max + pad
+  };
+}
 
 function destroyBatchSummaryChart() {
-  if (batchSummaryChart) {
-    batchSummaryChart.destroy();
-    batchSummaryChart = null;
+  if (!batchSummaryChart) {
+    return;
+  }
+
+  const canvas = batchSummaryChart.canvas;
+  if (canvas) {
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  batchSummaryChart = null;
+}
+
+function drawBatchSummaryChart(canvas, labels, temperatures, humidity) {
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return;
+  }
+
+  const parent = canvas.parentElement;
+  const cssWidth = Math.max(320, Math.floor((parent && parent.clientWidth) || canvas.clientWidth || 0));
+  const cssHeight = Math.max(220, Math.floor((parent && parent.clientHeight) || canvas.clientHeight || 260));
+  const pixelRatio = window.devicePixelRatio || 1;
+
+  canvas.width = Math.floor(cssWidth * pixelRatio);
+  canvas.height = Math.floor(cssHeight * pixelRatio);
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  canvas.style.display = 'block';
+  canvas.style.maxWidth = '100%';
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, cssWidth, cssHeight);
+
+  const padding = {
+    top: 18,
+    right: 64,
+    bottom: 48,
+    left: 56
+  };
+  const plotWidth = cssWidth - padding.left - padding.right;
+  const plotHeight = cssHeight - padding.top - padding.bottom;
+  if (plotWidth <= 0 || plotHeight <= 0) {
+    return;
+  }
+
+  const tempBounds = computeSeriesBounds(temperatures, 36, 39);
+  const humidityBounds = computeSeriesBounds(humidity, 45, 70);
+  const tickCount = Math.min(5, labels.length > 1 ? labels.length : 2);
+
+  const toPoint = function(index, value, bounds) {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    const x = padding.left + (labels.length === 1 ? plotWidth / 2 : (index / (labels.length - 1)) * plotWidth);
+    const ratio = (value - bounds.min) / ((bounds.max - bounds.min) || 1);
+    const y = padding.top + plotHeight - (ratio * plotHeight);
+    return { x: x, y: y };
+  };
+
+  const drawSeries = function(points, strokeColor, fillColor) {
+    const finitePoints = points.filter(Boolean);
+    if (!finitePoints.length) {
+      return;
+    }
+
+    context.beginPath();
+    let started = false;
+    points.forEach(function(point) {
+      if (!point) {
+        started = false;
+        return;
+      }
+
+      if (!started) {
+        context.moveTo(point.x, point.y);
+        started = true;
+      } else {
+        context.lineTo(point.x, point.y);
+      }
+    });
+
+    context.strokeStyle = strokeColor;
+    context.lineWidth = 2;
+    context.stroke();
+
+    if (fillColor) {
+      context.lineTo(finitePoints[finitePoints.length - 1].x, padding.top + plotHeight);
+      context.lineTo(finitePoints[0].x, padding.top + plotHeight);
+      context.closePath();
+      context.fillStyle = fillColor;
+      context.fill();
+    }
+
+    finitePoints.forEach(function(point) {
+      context.beginPath();
+      context.arc(point.x, point.y, 3, 0, Math.PI * 2);
+      context.fillStyle = strokeColor;
+      context.fill();
+    });
+  };
+
+  context.fillStyle = 'rgba(255, 255, 255, 0.02)';
+  context.fillRect(0, 0, cssWidth, cssHeight);
+
+  context.font = '11px "Space Grotesk", sans-serif';
+  context.textBaseline = 'middle';
+  context.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  context.lineWidth = 1;
+
+  for (let i = 0; i < tickCount; i++) {
+    const ratio = tickCount === 1 ? 0 : i / (tickCount - 1);
+    const y = padding.top + plotHeight - (ratio * plotHeight);
+    const tempValue = tempBounds.min + ((tempBounds.max - tempBounds.min) * ratio);
+    const humidityValue = humidityBounds.min + ((humidityBounds.max - humidityBounds.min) * ratio);
+
+    context.beginPath();
+    context.moveTo(padding.left, y);
+    context.lineTo(cssWidth - padding.right, y);
+    context.stroke();
+
+    context.fillStyle = '#f59e0b';
+    context.textAlign = 'right';
+    context.fillText(tempValue.toFixed(1) + '°C', padding.left - 8, y);
+
+    context.fillStyle = '#60a5fa';
+    context.textAlign = 'left';
+    context.fillText(humidityValue.toFixed(0) + '%', cssWidth - padding.right + 8, y);
+  }
+
+  context.beginPath();
+  context.moveTo(padding.left, padding.top + plotHeight);
+  context.lineTo(cssWidth - padding.right, padding.top + plotHeight);
+  context.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+  context.stroke();
+
+  const tempPoints = temperatures.map(function(value, index) {
+    return toPoint(index, value, tempBounds);
+  });
+  const humidityPoints = humidity.map(function(value, index) {
+    return toPoint(index, value, humidityBounds);
+  });
+
+  drawSeries(tempPoints, '#f59e0b', 'rgba(245, 158, 11, 0.08)');
+  drawSeries(humidityPoints, '#60a5fa', null);
+
+  const tickStep = labels.length > 8 ? Math.ceil(labels.length / 6) : 1;
+  context.fillStyle = '#94a3b8';
+  context.textAlign = 'center';
+  context.textBaseline = 'top';
+
+  for (let index = 0; index < labels.length; index += tickStep) {
+    const x = padding.left + (labels.length === 1 ? plotWidth / 2 : (index / (labels.length - 1)) * plotWidth);
+    context.fillText(labels[index], x, padding.top + plotHeight + 10);
   }
 }
 
 function renderBatchSummaryChart(logs) {
   const canvas = document.getElementById('bsChart');
-  if (!canvas || !window.Chart) return;
+  if (!canvas) return;
 
   destroyBatchSummaryChart();
 
-  const labels = (logs || []).map(row => formatBatchDateTime(row.recorded_at));
+  const labels = (logs || []).map(row => formatBatchChartLabel(row.recorded_at));
   const temperatures = (logs || []).map(row => row.temperature !== null && row.temperature !== undefined ? parseFloat(row.temperature) : null);
   const humidity = (logs || []).map(row => row.humidity !== null && row.humidity !== undefined ? parseFloat(row.humidity) : null);
 
-  batchSummaryChart = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Temperature (°C)',
-          data: temperatures,
-          borderColor: '#f59e0b',
-          backgroundColor: 'rgba(245,158,11,.12)',
-          pointBackgroundColor: '#f59e0b',
-          tension: 0.35,
-          fill: true,
-          borderWidth: 2,
-          spanGaps: true
-        },
-        {
-          label: 'Humidity (%)',
-          data: humidity,
-          borderColor: '#60a5fa',
-          backgroundColor: 'rgba(96,165,250,.10)',
-          pointBackgroundColor: '#60a5fa',
-          tension: 0.35,
-          fill: false,
-          borderWidth: 2,
-          spanGaps: true
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          labels: {
-            color: '#cbd5e1'
-          }
-        },
-        tooltip: {
-          mode: 'index',
-          intersect: false
-        }
-      },
-      interaction: {
-        mode: 'index',
-        intersect: false
-      },
-      scales: {
-        x: {
-          ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true },
-          grid: { color: 'rgba(255,255,255,.05)' }
-        },
-        y: {
-          ticks: { color: '#94a3b8' },
-          grid: { color: 'rgba(255,255,255,.05)' }
-        }
-      }
-    }
-  });
+  drawBatchSummaryChart(canvas, labels, temperatures, humidity);
+  batchSummaryChart = { canvas: canvas };
 }
 
 function viewBatchSummary(batchId){
@@ -392,7 +523,7 @@ function viewBatchSummary(batchId){
 
     const statusLabel = res.batch.status === 'terminated' ? 'terminated' : (res.batch.status === 'completed' ? 'completed' : 'active');
     $('#bs_summary').text(`This batch is ${statusLabel}. Temperature averaged ${res.session.temperature.avg !== null ? res.session.temperature.avg.toFixed(2) + '°C' : 'no readings'}, humidity averaged ${res.session.humidity.avg !== null ? res.session.humidity.avg.toFixed(2) + '%' : 'no readings'}, and egg swings were recorded ${res.session.swing_count || 0} times.`);
-    renderBatchSummaryChart(res.session.logs || []);
+    batchSummaryPendingLogs = res.session.logs || [];
 
     new bootstrap.Modal(document.getElementById('batchSummaryModal')).show();
   }, 'json').fail(function() {
@@ -403,6 +534,11 @@ function viewBatchSummary(batchId){
 
 document.getElementById('batchSummaryModal').addEventListener('hidden.bs.modal', function() {
   destroyBatchSummaryChart();
+  batchSummaryPendingLogs = [];
+});
+
+document.getElementById('batchSummaryModal').addEventListener('shown.bs.modal', function() {
+  renderBatchSummaryChart(batchSummaryPendingLogs);
 });
 </script>
 <?php require_once 'footer.php'; ?>

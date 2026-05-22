@@ -337,9 +337,8 @@ function showConfirm(title, message, onConfirm) {
   <div class="sidebar-section">Overview</div>
   <div class="nav-item"><a href="dashboard.php" class="nav-link-ghost <?= ($activePage??'')=='dashboard'?'active':'' ?>"><span class="nav-icon"><i class="fas fa-chart-pie"></i></span> Dashboard</a></div>
   <div class="sidebar-section">Management</div>
+  <div class="nav-item"><a href="batches.php" class="nav-link-ghost <?= in_array(($activePage??''), ['batches','schedules'], true)?'active':'' ?>"><span class="nav-icon"><i class="fas fa-layer-group"></i></span> Batches</a></div>
   <div class="nav-item"><a href="incubators.php" class="nav-link-ghost <?= ($activePage??'')=='incubators'?'active':'' ?>"><span class="nav-icon"><i class="fas fa-egg"></i></span> Incubators</a></div>
-  <div class="nav-item"><a href="batches.php" class="nav-link-ghost <?= ($activePage??'')=='batches'?'active':'' ?>"><span class="nav-icon"><i class="fas fa-layer-group"></i></span> Batches</a></div>
-  <div class="nav-item"><a href="schedules.php" class="nav-link-ghost <?= ($activePage??'')=='schedules'?'active':'' ?>"><span class="nav-icon"><i class="fas fa-calendar-check"></i></span> Schedules</a></div>
   <div class="nav-item"><a href="users.php" class="nav-link-ghost <?= in_array(($activePage??''), ['users','temperature'], true)?'active':'' ?>"><span class="nav-icon"><i class="fas fa-users-cog"></i></span> User Management</a></div>
   <div class="sidebar-section">Monitoring</div>
   <div class="nav-item"><a href="alerts.php" class="nav-link-ghost <?= ($activePage??'')=='alerts'?'active':'' ?>"><span class="nav-icon"><i class="fas fa-bell"></i></span> Alerts <span class="badge-count" id="alertCount">0</span></a></div>

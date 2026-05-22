@@ -64,7 +64,7 @@ $tempLogs = array_reverse($pdo->query(
     <div class="stat-card">
       <div class="stat-icon">🫧</div><div class="stat-label">Total Eggs</div>
       <div class="stat-val amber"><?= number_format($totalEggs) ?></div>
-      <div class="stat-badge up">In incubation</div>
+      <div class="stat-badge up">Current eggs incubating</div>
     </div>
   </div>
   <div class="col-6 col-lg-3">
@@ -174,19 +174,12 @@ $tempLogs = array_reverse($pdo->query(
         </select>
 
         <div style="margin-top:14px;background:rgba(255,255,255,.03);border:1px solid var(--ghost-border);border-radius:12px;padding:12px 14px;">
-          <div style="font-size:.72rem;color:var(--ghost-muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px;">Device Status</div>
-          <div id="deviceStatusBadge" class="status-pill offline"><span id="deviceStatusDot" class="status-dot off"></span><span id="deviceStatusText">OFFLINE</span></div>
+          <div style="font-size:.72rem;color:var(--ghost-muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px;">Device Mode</div>
+          <div id="deviceStatusBadge" class="status-pill offline"><span id="deviceStatusDot" class="status-dot off"></span><span id="deviceStatusText">IDLE</span></div>
           <div style="font-size:.72rem;color:var(--ghost-muted);margin-top:10px;line-height:1.5;">Monitoring is view only. Hardware changes are driven automatically by the controller and downloaded parameters.</div>
         </div>
 
-        <div class="control-buttons">
-          <button id="btnStart" onclick="startSessionQuick()" title="Start incubation session">
-            <i class="fas fa-play"></i> Start
-          </button>
-          <button id="btnSetParams" onclick="openIncubateModal()" disabled title="Set incubation parameters">
-            <i class="fas fa-sliders-h"></i> Set Params
-          </button>
-        </div>
+        <div style="font-size:.72rem;color:var(--ghost-muted);margin-top:10px;line-height:1.5;">Admin monitoring is read-only. Session control and parameter changes are handled through the user flow.</div>
       </div>
 
       <div class="col-md-9">
@@ -203,6 +196,9 @@ $tempLogs = array_reverse($pdo->query(
           <div class="monitor-item"><div class="monitor-label">Active Session Name</div><div class="monitor-value" id="monitorSessionName">—</div></div>
           <div class="monitor-item"><div class="monitor-label">Current Running Mode</div><div class="monitor-value" id="monitorMode">—</div></div>
           <div class="monitor-item"><div class="monitor-label">Last Server Update</div><div class="monitor-value" id="monitorLastSync">—</div></div>
+          <div class="monitor-item"><div class="monitor-label">Session Status</div><div class="monitor-value" id="monitorSessionStatus">—</div></div>
+          <div class="monitor-item"><div class="monitor-label">Session</div><div class="monitor-value" id="monitorParamsId">—</div></div>
+          <div class="monitor-item"><div class="monitor-label">Session Ends At</div><div class="monitor-value" id="monitorSessionEnds" style="font-size:.9rem;">—</div></div>
         </div>
       </div>
     </div>
@@ -248,7 +244,7 @@ $tempLogs = array_reverse($pdo->query(
     <div class="ghost-panel">
       <div class="ghost-panel-header d-flex justify-content-between align-items-center">
         <span class="ghost-panel-title">📦 Recent Batches</span>
-        <a href="batches.php" style="font-size:.8rem;color:var(--ghost-amber);text-decoration:none;">View all →</a>
+        <a href="incubators.php" style="font-size:.8rem;color:var(--ghost-amber);text-decoration:none;">View incubators →</a>
       </div>
       <div class="ghost-panel-body p-0">
         <table class="ghost-table">
@@ -373,7 +369,7 @@ $tempLogs = array_reverse($pdo->query(
         <!-- Note -->
         <div style="font-size:.78rem;color:var(--ghost-muted);padding:10px 14px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid var(--ghost-border);">
           <i class="fas fa-info-circle me-1" style="color:var(--ghost-amber);"></i>
-          Set Parameters saves the values to the database and pushes them to the ESP8266. Start Incubation begins the session timer and then turns on the PTC heater via Relay 1.
+          Set Parameters saves the values to the database and pushes them to the ESP8266. Session starts are handled from the user scheduler flow.
         </div>
       </div>
       <div class="modal-footer">
@@ -457,8 +453,13 @@ $tempLogs = array_reverse($pdo->query(
 
 <!-- ── CHART ────────────────────────────────────────────────── -->
 <script>
-// Store chart instance globally for updates
-let tempChartInstance = null;
+// Store chart data globally for updates
+let tempChartCanvas = null;
+let tempChartData = {
+  labels: [],
+  temperatures: [],
+  humidity: []
+};
 let liveSessionState = {
   startedAt: null,
   endsAt: null,
@@ -479,26 +480,179 @@ let liveSessionState = {
   scheduledBatchCount: 0
 };
 
-window.addEventListener('load', function() {
-  Chart.defaults.color='#64748b'; Chart.defaults.font.family='Space Grotesk';
-  tempChartInstance = new Chart(document.getElementById('tempChart'),{
-    type:'line',
-    data:{
-      labels:<?= json_encode(array_column($tempLogs,'lbl')) ?>,
-      datasets:[
-        {label:'Temperature (°C)',yAxisID:'y',data:<?= json_encode(array_column($tempLogs,'temperature')) ?>,borderColor:'#f5a623',backgroundColor:'rgba(245,166,35,.08)',tension:.4,pointRadius:4,pointBackgroundColor:'#f5a623',borderWidth:2,fill:true},
-        {label:'Humidity (%)',yAxisID:'y2',data:<?= json_encode(array_column($tempLogs,'humidity')) ?>,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.06)',tension:.4,pointRadius:4,pointBackgroundColor:'#3b82f6',borderWidth:2,fill:true}
-      ]
-    },
-    options:{responsive:true,interaction:{mode:'index',intersect:false},plugins:{legend:{labels:{boxWidth:10,padding:16,font:{size:11}}}},
-      scales:{
-        x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{font:{size:10}}},
-        y:{grid:{color:'rgba(255,255,255,.04)'},min:36,max:39,ticks:{font:{size:10},callback:v=>v+'°C'}},
-        y2:{position:'right',grid:{display:false},min:45,max:70,ticks:{font:{size:10},callback:v=>v+'%'}}
-      }
+function computeSeriesBounds(values, preferredMin, preferredMax) {
+  const nums = (values || []).map(v => Number(v)).filter(v => Number.isFinite(v));
+  if (!nums.length) {
+    return { min: preferredMin, max: preferredMax };
+  }
+
+  let min = Math.min(...nums);
+  let max = Math.max(...nums);
+  if (min === max) {
+    min -= 0.5;
+    max += 0.5;
+  } else {
+    const range = max - min;
+    const pad = Math.max(range * 0.08, 0.4);
+    min -= pad;
+    max += pad;
+  }
+
+  if (Number.isFinite(preferredMin)) min = Math.min(min, preferredMin);
+  if (Number.isFinite(preferredMax)) max = Math.max(max, preferredMax);
+  return { min, max };
+}
+
+function drawTrendChart(labels, temperatures, humidity) {
+  if (!tempChartCanvas) tempChartCanvas = document.getElementById('tempChart');
+  const canvas = tempChartCanvas;
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const parent = canvas.parentElement;
+  const cssWidth = Math.max(320, Math.floor((parent && parent.clientWidth) || canvas.clientWidth || 0));
+  const cssHeight = Math.max(220, Math.floor((parent && parent.clientHeight) || canvas.clientHeight || 260));
+  const pixelRatio = window.devicePixelRatio || 1;
+
+  canvas.width = Math.floor(cssWidth * pixelRatio);
+  canvas.height = Math.floor(cssHeight * pixelRatio);
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  canvas.style.display = 'block';
+  canvas.style.maxWidth = '100%';
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.fillRect(0, 0, cssWidth, cssHeight);
+
+  if (!labels.length) {
+    ctx.fillStyle = '#64748b';
+    ctx.font = '600 13px "Space Grotesk", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('No temperature data yet', cssWidth / 2, cssHeight / 2);
+    return;
+  }
+
+  const padding = { top: 22, right: 76, bottom: 54, left: 60 };
+  const plotWidth = cssWidth - padding.left - padding.right;
+  const plotHeight = cssHeight - padding.top - padding.bottom;
+  if (plotWidth <= 0 || plotHeight <= 0) return;
+
+  const tempBounds = computeSeriesBounds(temperatures, 36, 39);
+  const humBounds = computeSeriesBounds(humidity, 45, 70);
+  const tickCount = labels.length > 1 ? Math.min(5, labels.length) : 2;
+
+  const toPoint = function(index, value, bounds) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return null;
+    const x = padding.left + (labels.length === 1 ? plotWidth / 2 : (index / (labels.length - 1)) * plotWidth);
+    const ratio = (numericValue - bounds.min) / ((bounds.max - bounds.min) || 1);
+    const y = padding.top + plotHeight - (ratio * plotHeight);
+    return { x, y };
+  };
+
+  const drawSeries = function(points, strokeColor, fillColor) {
+    const finitePoints = points.filter(Boolean);
+    if (!finitePoints.length) return;
+
+    ctx.beginPath();
+    let started = false;
+    points.forEach(function(point) {
+      if (!point) { started = false; return; }
+      if (!started) { ctx.moveTo(point.x, point.y); started = true; }
+      else { ctx.lineTo(point.x, point.y); }
+    });
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    if (fillColor) {
+      ctx.lineTo(finitePoints[finitePoints.length - 1].x, padding.top + plotHeight);
+      ctx.lineTo(finitePoints[0].x, padding.top + plotHeight);
+      ctx.closePath();
+      ctx.fillStyle = fillColor;
+      ctx.fill();
     }
+
+    finitePoints.forEach(function(point) {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+    });
+  };
+
+  ctx.font = '11px "Space Grotesk", sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+
+  for (let i = 0; i < tickCount; i++) {
+    const ratio = tickCount === 1 ? 0 : i / (tickCount - 1);
+    const y = padding.top + plotHeight - (ratio * plotHeight);
+    const tempValue = tempBounds.min + ((tempBounds.max - tempBounds.min) * ratio);
+    const humValue = humBounds.min + ((humBounds.max - humBounds.min) * ratio);
+
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(cssWidth - padding.right, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#f5a623';
+    ctx.textAlign = 'right';
+    ctx.fillText(tempValue.toFixed(1) + '°C', padding.left - 10, y);
+
+    ctx.fillStyle = '#3b82f6';
+    ctx.textAlign = 'left';
+    ctx.fillText(humValue.toFixed(0) + '%', cssWidth - padding.right + 10, y);
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(padding.left, padding.top + plotHeight);
+  ctx.lineTo(cssWidth - padding.right, padding.top + plotHeight);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.stroke();
+
+  const tempPoints = temperatures.map((v, idx) => toPoint(idx, v, tempBounds));
+  const humPoints = humidity.map((v, idx) => toPoint(idx, v, humBounds));
+  drawSeries(tempPoints, '#f5a623', 'rgba(245,166,35,0.08)');
+  drawSeries(humPoints, '#3b82f6', null);
+
+  const tickStep = labels.length > 8 ? Math.ceil(labels.length / 6) : 1;
+  ctx.fillStyle = '#94a3b8';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+
+  for (let i = 0; i < labels.length; i += tickStep) {
+    const x = padding.left + (labels.length === 1 ? plotWidth / 2 : (i / (labels.length - 1)) * plotWidth);
+    ctx.fillText(labels[i], x, padding.top + plotHeight + 12);
+  }
+}
+
+function renderTemperatureTrendChart() {
+  drawTrendChart(tempChartData.labels, tempChartData.temperatures, tempChartData.humidity);
+}
+
+window.addEventListener('load', function() {
+  tempChartData.labels = <?= json_encode(array_column($tempLogs,'lbl')) ?>;
+  tempChartData.temperatures = (<?= json_encode(array_column($tempLogs,'temperature')) ?> || []).map(v => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
   });
-  
+  tempChartData.humidity = (<?= json_encode(array_column($tempLogs,'humidity')) ?> || []).map(v => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  });
+  tempChartCanvas = document.getElementById('tempChart');
+  renderTemperatureTrendChart();
+  window.addEventListener('resize', renderTemperatureTrendChart);
+  refreshTemperatureChart();
+
   // Start auto-refresh of temperature chart every 30 seconds
   setInterval(refreshTemperatureChart, 30000);
 
@@ -514,18 +668,23 @@ window.addEventListener('load', function() {
 // Function to refresh temperature chart with latest data
 function refreshTemperatureChart() {
   const incId = document.getElementById('qc_incubator_id').value;
-  if (!incId || !tempChartInstance) return;
+  if (!incId || !tempChartCanvas) return;
   
   $.get('../ajax/admin_temperature_logs.php', {
     incubator_id: incId,
     limit: 10
   }, function(data) {
-    if (data && data.length > 0) {
-      tempChartInstance.data.labels = data.map(d => d.lbl);
-      tempChartInstance.data.datasets[0].data = data.map(d => d.temperature);
-      tempChartInstance.data.datasets[1].data = data.map(d => d.humidity);
-      tempChartInstance.update();
-    }
+    const logs = Array.isArray(data) ? data : [];
+    tempChartData.labels = logs.map(d => d.lbl);
+    tempChartData.temperatures = logs.map(d => {
+      const n = Number(d.temperature);
+      return Number.isFinite(n) ? n : null;
+    });
+    tempChartData.humidity = logs.map(d => {
+      const n = Number(d.humidity);
+      return Number.isFinite(n) ? n : null;
+    });
+    renderTemperatureTrendChart();
   }, 'json');
 }
 
@@ -534,7 +693,8 @@ function refreshTemperatureChart() {
 // ══════════════════════════════════════════════════════════
 function selectedOpt() {
   const sel = document.getElementById('qc_incubator_id');
-  return sel.options[sel.selectedIndex];
+  if (!sel || sel.selectedIndex < 0) return null;
+  return sel.options[sel.selectedIndex] || null;
 }
 
 function syncSelectedOptSettings(settings) {
@@ -542,13 +702,14 @@ function syncSelectedOptSettings(settings) {
   if (!opt || !settings) return;
 
   const pairs = {
-    target: settings.target_temp ?? settings.targetTemp,
-    min: settings.min_temp ?? settings.minTemp,
-    max: settings.max_temp ?? settings.maxTemp,
-    th: settings.target_humidity ?? settings.targetHum,
-    thmin: settings.min_humidity ?? settings.minHum,
-    thmax: settings.max_humidity ?? settings.maxHum,
-    interval: settings.turning_interval ?? settings.interval
+    target: settings.target_temp ?? settings.targetT,
+    min: settings.min_temp ?? settings.minT,
+    max: settings.max_temp ?? settings.maxT,
+    th: settings.target_humidity ?? settings.targetH,
+    thmin: settings.min_humidity ?? settings.minH,
+    thmax: settings.max_humidity ?? settings.maxH,
+    interval: settings.turning_interval ?? settings.interval,
+    swingDuration: settings.swing_duration_sec ?? settings.duration
   };
 
   Object.entries(pairs).forEach(([key, value]) => {
@@ -560,30 +721,29 @@ function syncSelectedOptSettings(settings) {
 
 function onIncubatorChange() {
   fetchLiveStatus();
+  refreshTemperatureChart();
 }
 
 function getIncubationFormValues() {
   return {
     incId: document.getElementById('qc_incubator_id').value,
-    eggCount: readIntInput('inc_egg_count', 0, 1, 99999),
-    targetTemp: readFloatInput('inc_target_temp', 37.5),
-    minTemp: readFloatInput('inc_min_temp', 37.0),
-    maxTemp: readFloatInput('inc_max_temp', 38.0),
-    targetHum: readFloatInput('inc_target_hum', 55.0),
-    minHum: readFloatInput('inc_min_hum', 50.0),
-    maxHum: readFloatInput('inc_max_hum', 60.0),
-    duration: readIntInput('sw_duration', 30, 5, 300),
-    interval: readFloatInput('sw_interval', 8.0),
-    sessionDays: 21
+    eggCount: parseInt(document.getElementById('inc_egg_count').value, 10) || 0,
+    targetTemp: parseFloat(document.getElementById('inc_target_temp').value),
+    minTemp: parseFloat(document.getElementById('inc_min_temp').value),
+    maxTemp: parseFloat(document.getElementById('inc_max_temp').value),
+    targetHum: parseFloat(document.getElementById('inc_target_hum').value),
+    minHum: parseFloat(document.getElementById('inc_min_hum').value),
+    maxHum: parseFloat(document.getElementById('inc_max_hum').value),
+    duration: parseInt(document.getElementById('sw_duration').value, 10) || 30,
+    interval: parseFloat(document.getElementById('sw_interval').value) || 8
   };
 }
 
 function setTurningIntervalPreset(hours) {
   const input = document.getElementById('sw_interval');
-  if (input) {
-    input.value = hours;
-    updateIntervalPreview('sw_interval', 'sw_interval_preview');
-  }
+  if (!input) return;
+  input.value = hours;
+  updateIntervalPreview('sw_interval', 'sw_interval_preview');
 }
 
 function formatIntervalMinutes(hours) {
@@ -680,30 +840,8 @@ function saveIncubationSettings(startSession) {
       duration_sec: values.duration,
       token: 'ghost_hw_secret_2024'
     }, function() {
-      if (!startSession) {
-        showFb('✅ Parameters saved.', 'success');
-        fetchLiveStatus();
-        return;
-      }
-
-      $.post('../ajax/hardware_api.php', {
-        action: 'start_session',
-        incubator_id: values.incId,
-        egg_count: values.eggCount,
-        session_days: values.sessionDays,
-        token: 'ghost_hw_secret_2024'
-      }, function(startRes) {
-        if (!startRes.success) {
-          showFb('❌ Could not start session: ' + (startRes.message || ''), 'danger');
-          return;
-        }
-
-        sendCmd('heater_on', function() {
-          bootstrap.Modal.getInstance(document.getElementById('incubateModal')).hide();
-          showFb('✅ Session started. Countdown is now running.', 'success');
-          fetchLiveStatus();
-        });
-      }, 'json');
+      showFb('✅ Parameters saved.', 'success');
+      fetchLiveStatus();
     }, 'json');
   }, 'json');
 }
@@ -745,108 +883,6 @@ function openIncubateModal() {
 // ══════════════════════════════════════════════════════════
 //  START NOW MODAL (Swing)
 // ══════════════════════════════════════════════════════════
-const startSessionModalHtml = `
-<div class="modal fade" id="startSessionModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered" style="max-width:520px;">
-    <div class="modal-content">
-      <div class="modal-header">
-        <div>
-          <h5 class="modal-title">▶ Start Session</h5>
-          <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:2px;">Confirm the session before heaters begin</div>
-        </div>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body" style="padding:24px;">
-        <div style="background:rgba(245,166,35,.06);border:1px solid rgba(245,166,35,.2);border-radius:10px;padding:12px 16px;margin-bottom:18px;">
-          <div style="font-size:.75rem;color:var(--ghost-muted);margin-bottom:4px;">Selected incubator</div>
-          <div style="font-weight:700;color:white;" id="startSessionIncubatorName">—</div>
-        </div>
-        <div class="mb-3" style="margin-bottom:18px;">
-          <label class="form-label-ghost" style="display:block;margin-bottom:8px;font-weight:600;">🥚 How many eggs were placed?</label>
-          <input type="number" min="1" step="1" class="form-control-ghost" id="startSessionEggCount" placeholder="Enter egg count" style="padding:10px;font-size:1rem;">
-          <div style="font-size:.75rem;color:var(--ghost-muted);margin-top:6px;">This will be saved to the batch list and session record.</div>
-        </div>
-        <div style="font-size:.78rem;color:var(--ghost-muted);padding:10px 14px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid var(--ghost-border);">
-          <i class="fas fa-info-circle me-1" style="color:var(--ghost-amber);"></i>
-          Starting a session will create/update the incubating batch, turn on the heaters, and begin the countdown.
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-outline-ghost" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn-ghost" id="confirmStartSessionBtn">Start Session</button>
-      </div>
-    </div>
-  </div>
-</div>`;
-(function(){ if (!document.getElementById('startSessionModal')) document.body.insertAdjacentHTML('beforeend', startSessionModalHtml); })();
-
-function openSwingModal() {
-  const opt = selectedOpt();
-  if (!opt || !opt.value) { showFb('No active incubator selected.','warning'); return; }
-  // Pre-fill interval from saved settings
-  document.getElementById('sw_interval').value = sanitizeFloatValue(opt.dataset.interval, 8, 0.01, 24);
-  new bootstrap.Modal(document.getElementById('swingModal')).show();
-}
-
-function openStartSessionModal() {
-  const opt = selectedOpt();
-  if (!opt || !opt.value) { showFb('No active incubator selected.','warning'); return; }
-  
-  const status = liveSessionState.status || 'idle';
-  if (status === 'running') { 
-    showFb('❌ A session is already running. Stop it first before starting a new one.', 'warning');
-    return;
-  }
-  
-  const incNameEl = document.getElementById('startSessionIncubatorName');
-  const eggCountEl = document.getElementById('startSessionEggCount');
-  if (incNameEl) incNameEl.textContent = opt.text || '—';
-  if (eggCountEl) {
-    eggCountEl.value = '';
-    eggCountEl.max = opt.dataset.cap || '';
-    eggCountEl.placeholder = opt.dataset.cap ? `Enter egg count (max ${opt.dataset.cap})` : 'Enter egg count';
-    eggCountEl.style.display = 'block';
-    eggCountEl.focus();
-  }
-  const ok = document.getElementById('confirmStartSessionBtn');
-  if (ok && !ok.dataset.bound) {
-    ok.dataset.bound = '1';
-    ok.removeEventListener('click', confirmStartSession);
-    ok.addEventListener('click', confirmStartSession);
-  }
-  new bootstrap.Modal(document.getElementById('startSessionModal')).show();
-}
-
-function confirmStartSession() {
-  const incId = document.getElementById('qc_incubator_id').value;
-  const eggCount = parseInt(document.getElementById('startSessionEggCount').value) || 0;
-  const sel = selectedOpt();
-  const days = parseInt((sel && sel.dataset && sel.dataset.days) ? sel.dataset.days : 21) || 21;
-  if (!incId) { showFb('No incubator selected','warning'); return; }
-  if (eggCount < 1) { showFb('Please enter how many eggs were placed.', 'warning'); return; }
-
-  showFb('Starting session…', 'info');
-  $.post('../ajax/hardware_api.php', {
-    action:'start_session',
-    incubator_id: incId,
-    egg_count: eggCount,
-    session_days: days,
-    token: 'ghost_hw_secret_2024'
-  }, function(res) {
-    if (!res.success) { showFb('❌ Could not start: ' + (res.message||''), 'danger'); return; }
-    sendCmd('heater_on', function() {
-      const modal = bootstrap.Modal.getInstance(document.getElementById('startSessionModal'));
-      if (modal) modal.hide();
-      showFb('✅ Session started.', 'success');
-      fetchLiveStatus();
-    });
-  }, 'json').fail(function(xhr, textStatus, errorThrown){
-    const status = xhr && xhr.status ? xhr.status : '0';
-    const msg = `❌ Could not reach server (status ${status}). ${textStatus || errorThrown || ''}`;
-    showFb(msg, 'danger');
-  });
-}
-
 function confirmSwing() {
   const incId    = document.getElementById('qc_incubator_id').value;
   const duration = parseInt(document.getElementById('sw_duration').value) || 30;
@@ -968,6 +1004,13 @@ function setStatusPill(id, dotId, valueId, state, onText, offText, onClass, offC
   value.textContent = isOn ? onText : offText;
 }
 
+function setDeviceModeBadge(mode, isOnline) {
+  const normalized = String(mode || 'idle').toLowerCase();
+  const active = isOnline && (normalized === 'incubating' || normalized === 'hatching');
+  const label = isOnline ? normalized.toUpperCase() : 'OFFLINE';
+  setStatusPill('deviceStatusBadge', 'deviceStatusDot', 'deviceStatusText', active, label, label, 'online', 'offline');
+}
+
 function setRelayState(dotId, valueId, state, onText, offText) {
   const dot = document.getElementById(dotId);
   const value = document.getElementById(valueId);
@@ -1080,7 +1123,7 @@ function fetchLiveStatus() {
       lbl.textContent='Offline'; 
     }
     
-    setStatusPill('deviceStatusBadge', 'deviceStatusDot', 'deviceStatusText', isOnline, 'ONLINE', 'OFFLINE', 'online', 'offline');
+    setDeviceModeBadge(res.current_mode || 'idle', isOnline);
     syncSelectedOptSettings(res);
     
     // Only display data if device is online
@@ -1096,11 +1139,15 @@ function fetchLiveStatus() {
       setText('monitorSessionName', res.active_session_name || '—');
       setText('monitorMode', res.current_mode || 'Idle');
       setText('monitorLastSync', formatDisplayTime(res.last_server_sync || res.last_seen));
+      setText('monitorSessionStatus', res.session_status || '—');
+      setText('monitorSessionEnds', formatDisplayTime(res.session_ends_at));
 
       if (res.active_batch_id) {
         setText('monitorParamsId', `Batch #${res.active_batch_id}`);
       } else if (res.session_number) {
         setText('monitorParamsId', `Session #${res.session_number}`);
+      } else {
+        setText('monitorParamsId', '—');
       }
     } else {
       // Show "--" for all values when offline
@@ -1115,6 +1162,9 @@ function fetchLiveStatus() {
       setText('monitorSessionName', '—');
       setText('monitorMode', '—');
       setText('monitorLastSync', '—');
+      setText('monitorSessionStatus', '—');
+      setText('monitorParamsId', '—');
+      setText('monitorSessionEnds', '—');
       document.getElementById('heater1Dot').className = 'status-dot';
       document.getElementById('heater2Dot').className = 'status-dot';
       document.getElementById('heaterFanDot').className = 'status-dot';
@@ -1338,9 +1388,7 @@ function updateControlButtons() {
 }
 
 function startSessionQuick() {
-  const incId = document.getElementById('qc_incubator_id').value;
-  if (!incId) { showFb('No incubator selected','warning'); return; }
-  openStartSessionModal();
+  showFb('Admin session start is disabled. Use the user schedule flow.', 'warning');
 }
 
 function stopSessionQuick() {

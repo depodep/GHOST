@@ -26,8 +26,19 @@ if (!$incubator_id) {
 $pdo = getDB();
 $uid = $_SESSION['user_id'];
 
-$check = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE incubator_id=? AND user_id=?");
-$check->execute([$incubator_id, $uid]);
+$check = $pdo->prepare(
+    "SELECT COUNT(*)
+     FROM incubators i
+     WHERE i.id = ?
+       AND (
+            i.owner_id = ?
+            OR EXISTS (
+                SELECT 1 FROM batches b
+                WHERE b.incubator_id = i.id AND b.user_id = ?
+            )
+       )"
+);
+$check->execute([$incubator_id, $uid, $uid]);
 if (!$check->fetchColumn()) {
     echo json_encode(['success' => false, 'message' => 'Access denied']);
     exit;
@@ -37,7 +48,7 @@ if (!$check->fetchColumn()) {
 $stmt = $pdo->prepare(
     "SELECT temperature, humidity, recorded_at, DATE_FORMAT(recorded_at,'%H:%i') AS lbl
      FROM temperature_logs 
-     WHERE incubator_id = ? AND temperature > 0 AND temperature IS NOT NULL AND humidity IS NOT NULL
+     WHERE incubator_id = ? AND temperature > 0 AND temperature IS NOT NULL
      ORDER BY recorded_at DESC 
      LIMIT ?
      "
@@ -64,7 +75,7 @@ $stateHum = isset($state['current_humidity']) ? (float)$state['current_humidity'
 $stateSeen = $state['last_seen'] ?? null;
 
 // Only append live state if temperatures are valid (> 0 and not NULL)
-if ($stateSeen && $stateTemp !== null && $stateHum !== null && $stateTemp > 0) {
+if ($stateSeen && $stateTemp !== null && $stateTemp > 0) {
     $stateTs = strtotime($stateSeen);
     $lastTs = $lastLogAt ? strtotime($lastLogAt) : 0;
     if ($stateTs && $stateTs > $lastTs) {
@@ -75,6 +86,13 @@ if ($stateSeen && $stateTemp !== null && $stateHum !== null && $stateTemp > 0) {
         ];
     }
 }
+
+foreach ($logs as &$row) {
+    $row['temperature'] = isset($row['temperature']) && $row['temperature'] !== null ? (float)$row['temperature'] : null;
+    $row['humidity'] = isset($row['humidity']) && $row['humidity'] !== null ? (float)$row['humidity'] : null;
+    $row['lbl'] = (string)($row['lbl'] ?? '');
+}
+unset($row);
 
 echo json_encode($logs);
 ?>

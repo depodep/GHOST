@@ -7,11 +7,20 @@ define('DB_NAME', 'ghost_incubator');
 define('SITE_NAME', 'GHOST Incubator');
 define('SITE_VERSION', '1.0.0');
 define('BASE_URL', 'http://localhost/GHOST');
+define('SCHEDULE_OFFLINE_GRACE_SECONDS', 120);
+define('SCHEDULER_POLL_INTERVAL_SECONDS', 30);
+define('SCHEDULER_EXECUTION_INTERVAL_SECONDS', 30);
+define('SCHEDULER_LOCK_TTL_SECONDS', 90);
+define('SCHEDULER_WORKER_URL', BASE_URL . '/ajax/scheduler_worker.php');
+
+require_once __DIR__ . '/SchedulerWorker.php';
 
 // Session start
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
+
+date_default_timezone_set('Asia/Manila');
 
 // PDO Connection
 function getDB() {
@@ -28,6 +37,7 @@ function getDB() {
                     PDO::ATTR_EMULATE_PREPARES   => false
                 )
             );
+            $pdo->exec("SET time_zone = '+08:00'");
         } catch (PDOException $e) {
             die(json_encode(array('success' => false, 'message' => 'Database connection failed: ' . $e->getMessage())));
         }
@@ -110,11 +120,15 @@ function severityIcon($severity) {
     return '&#x2139;&#xFE0F;';
 }
 
+function schedulerWorkerUrl() {
+    return SCHEDULER_WORKER_URL;
+}
+
 // Automatic batch scheduler
 function runBatchScheduler() {
     try {
         $pdo = getDB();
-        $scheduleGraceSeconds = 10; // 10-second grace after due time before failing
+        $scheduleGraceSeconds = SCHEDULE_OFFLINE_GRACE_SECONDS;
         // Run in transaction to avoid race conditions
         $pdo->beginTransaction();
 
@@ -322,7 +336,7 @@ function runBatchScheduler() {
 
         // 1.5) Detect running sessions with no heartbeat within timeout and mark them failed
         try {
-            $heartbeatTimeoutSeconds = 10;
+            $heartbeatTimeoutSeconds = SCHEDULE_OFFLINE_GRACE_SECONDS;
             $staleStmt = $pdo->prepare(
                 "SELECT s.id AS session_id, s.batch_id, s.incubator_id, s.started_at, h.last_seen
                  FROM sessions s
@@ -398,8 +412,3 @@ function runBatchScheduler() {
     }
 }
 
-// Run scheduler on each request, but avoid running during CLI/cron tasks
-if (php_sapi_name() !== 'cli') {
-    // suppress any errors; this is a lightweight background action
-    try { runBatchScheduler(); } catch (Exception $ex) {}
-}

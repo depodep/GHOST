@@ -137,6 +137,75 @@ function loadAlertCount(){
 }
 loadAlertCount();
 setInterval(loadAlertCount, 30000);
+
+(function(){
+  if (window.__ghostSchedulerPollerStarted) {
+    return;
+  }
+  window.__ghostSchedulerPollerStarted = true;
+
+  const endpoint = <?= json_encode(schedulerWorkerUrl()) ?>;
+  const intervalMs = <?= (int)(SCHEDULER_POLL_INTERVAL_SECONDS * 1000) ?>;
+  let inFlight = false;
+  let timerId = null;
+  let stopped = false;
+
+  function scheduleNextTick() {
+    if (timerId) {
+      clearTimeout(timerId);
+    }
+    timerId = setTimeout(runTick, intervalMs);
+  }
+
+  async function runTick() {
+    if (stopped) {
+      return;
+    }
+
+    if (inFlight) {
+      scheduleNextTick();
+      return;
+    }
+
+    inFlight = true;
+    const startedAt = Date.now();
+    console.info('[GHOST scheduler] check running', { source: 'admin-page-poll' });
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({
+          source: 'admin-page-poll'
+        })
+      });
+
+      if (response.status === 401 || response.status === 403) {
+        stopped = true;
+        return;
+      }
+
+      const payload = await response.json().catch(function() { return null; });
+      console.info('[GHOST scheduler] check finished', {
+        status: payload && payload.status ? payload.status : 'unknown',
+        duration_ms: Date.now() - startedAt
+      });
+    } catch (error) {
+      // Silent by design.
+    } finally {
+      inFlight = false;
+      if (!stopped) {
+        scheduleNextTick();
+      }
+    }
+  }
+
+  runTick();
+})();
 </script>
 </body>
 </html>
