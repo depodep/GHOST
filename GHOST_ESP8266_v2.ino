@@ -90,7 +90,6 @@ String lcdTransientLine1;
 String lcdTransientLine2;
 unsigned long lcdLastRunningPhaseTick = 0;
 uint8_t lcdRunningPhase = 0;
-// LCD display functions moved below session-state declarations
 
 // ─────────────────────────────────────────────
 //  EEPROM ADDRESSES FOR LOCAL STORAGE
@@ -950,13 +949,18 @@ void loop() {
             readHumidity();
         }
 
-        // ── Heater thermostat control (using saved parameters) ─────────────
+        // ── Heater thermostat control (target-based behavior)
+        // Keep heater ON while reaching target and until max temp is reached.
         if (tempOK && !heaterManualOverride) {
-            // Use savedTargetTemp, savedMinTemp, savedMaxTemp
-            if (currentTemp < savedMinTemp) {
+            if (currentTemp < savedTargetTemp) {
+                // Below target: heat
                 setHeater(true);
-            } else if (currentTemp > savedMaxTemp) {
+            } else if (currentTemp >= savedMaxTemp) {
+                // At/above max: stop heater to prevent overheating
                 setHeater(false);
+            } else {
+                // Between target and max: keep heater ON
+                setHeater(true);
             }
         } else if (!heaterManualOverride && heaterGroupOn) {
             setHeater(false);
@@ -967,18 +971,19 @@ void loop() {
             setHeaterFan(true);
         }
 
-        // Exhaust: cycle for air mixing while heating, continuous when temp meets or exceeds max temp
+        // Exhaust: cycle for air mixing while below max temp (30s on, 30s off),
+        // continuous exhaust when max temp reached until temp returns to target.
         if (tempOK) {
-            const bool overheat = currentTemp >= savedMaxTemp;
-            const bool isHeating = currentTemp < savedTargetTemp;
-            Serial.printf("[Exhaust] Temp=%.1f | Target=%.1f | Heating=%d | Overheat=%d | exhaustOn=%d\n", currentTemp, savedTargetTemp, isHeating, overheat, exhaustOn);
-            
-            if (overheat) {
+            Serial.printf("[Exhaust] Temp=%.1f | Target=%.1f | Max=%.1f | exhaustOn=%d\n", currentTemp, savedTargetTemp, savedMaxTemp, exhaustOn);
+
+            if (currentTemp >= savedMaxTemp) {
+                // Overheat: ensure heater is off and run exhaust continuously
+                if (heaterGroupOn) setHeater(false);
                 if (!heaterFanOn) setHeaterFan(true);
                 if (!exhaustOn) setExhaust(true);
                 exhaustCycleActive = false;
-            } else if (isHeating) {
-                // Cycle exhaust on/off (30s on, 30s off) while heating toward target
+            } else {
+                // Not overheat: cycle exhaust on/off for mixing (interval/duration)
                 if (!exhaustCycleActive && (now - lastExhaustCycleAt >= EXHAUST_CYCLE_INTERVAL_MS)) {
                     setExhaust(true);
                     exhaustCycleActive = true;
@@ -989,10 +994,6 @@ void loop() {
                     exhaustCycleActive = false;
                     lastExhaustCycleAt = now;  // Mark when we turned OFF to create OFF interval
                 }
-            } else {
-                // Temperature at or above target, turn off exhaust cycling
-                if (exhaustOn) setExhaust(false);
-                exhaustCycleActive = false;
             }
         }
 
